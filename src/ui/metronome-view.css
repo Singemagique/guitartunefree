@@ -1,0 +1,374 @@
+/* Metronome view. All classes prefixed .nv- */
+
+.nv {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.nv-panel {
+  padding: 16px 14px 14px;
+}
+
+/* --- tempo readout ------------------------------------------------------- */
+
+.nv-bpm-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.nv-bpm {
+  display: flex;
+  align-items: baseline;
+  line-height: 1;
+}
+
+.nv-bpm-value {
+  font-size: 60px;
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* Zero width so the unit overhangs to the right instead of shifting the
+   numeral off the axis every other element in the view is centred on. The
+   indent stands in for the gap the unit no longer contributes. */
+.nv-bpm-unit {
+  width: 0;
+  min-width: 0;
+  text-indent: 8px;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.nv-tempo-name {
+  margin: 4px 0 5px;
+  text-align: center;
+  font-size: 13px;
+  font-style: italic;
+  letter-spacing: 0.03em;
+  color: var(--amber);
+  opacity: 0.85;
+}
+
+.nv-step {
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+/* --- tempo slider -------------------------------------------------------- */
+
+.nv-slider {
+  --nv-fill: 33%;
+
+  width: 100%;
+  height: 44px;
+  margin: 0 0 5px;
+  padding: 0;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.nv-slider::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, var(--amber-deep), var(--amber)) 0 / var(--nv-fill) 100% no-repeat,
+    var(--line);
+}
+
+.nv-slider::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -7px;
+  border: 2px solid var(--amber);
+  border-radius: 50%;
+  background: var(--panel-2);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 50%);
+}
+
+.nv-slider::-moz-range-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.nv-slider::-moz-range-progress {
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--amber-deep), var(--amber));
+}
+
+.nv-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--amber);
+  border-radius: 50%;
+  background: var(--panel-2);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 50%);
+}
+
+/* The thumb halo alone reads ~2.1:1 and vanishes over the amber fill, so the
+   shared amber ring stays — the halo is decoration on top of it. */
+.nv-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgb(255 180 84 / 30%), 0 2px 6px rgb(0 0 0 / 50%);
+}
+
+.nv-slider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px rgb(255 180 84 / 30%), 0 2px 6px rgb(0 0 0 / 50%);
+}
+
+/* --- tap tempo ----------------------------------------------------------- */
+
+.nv-tap {
+  width: 100%;
+}
+
+.nv-tap.is-flash {
+  animation: nv-flash 260ms ease-out;
+}
+
+@keyframes nv-flash {
+  0% {
+    border-color: var(--amber);
+    color: var(--amber);
+    background: rgb(255 180 84 / 22%);
+  }
+
+  100% {
+    background: rgb(255 180 84 / 0%);
+  }
+}
+
+/* --- beat dots ----------------------------------------------------------- */
+
+.nv-dots {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 26px;
+  padding: 2px 0;
+}
+
+.nv-dot {
+  position: relative;
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid var(--muted);
+  border-radius: 50%;
+  opacity: 0.55;
+  will-change: transform;
+}
+
+.nv-dot-accent {
+  border-color: var(--amber);
+  background: var(--amber);
+  opacity: 0.8;
+}
+
+.nv-dot-glow {
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgb(240 233 220 / 55%), rgb(240 233 220 / 0%) 70%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.nv-dot-accent .nv-dot-glow {
+  background: radial-gradient(circle, rgb(255 180 84 / 75%), rgb(255 180 84 / 0%) 70%);
+}
+
+.nv-dot.is-pulse {
+  animation: nv-pulse 130ms ease-out;
+}
+
+.nv-dot.is-pulse .nv-dot-glow {
+  animation: nv-glow 300ms ease-out;
+}
+
+@keyframes nv-pulse {
+  0% {
+    transform: scale(1);
+  }
+
+  45% {
+    transform: scale(1.75);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes nv-glow {
+  0% {
+    transform: scale(0.7);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+/* --- transport ----------------------------------------------------------- */
+
+.nv-transport-row {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 2px;
+}
+
+.nv-transport {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 28%, var(--panel-2), var(--panel) 70%);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 0 0 1px rgb(255 180 84 / 14%), 0 8px 20px rgb(0 0 0 / 45%);
+  transition: box-shadow 0.28s ease, border-color 0.28s ease, transform 0.1s ease;
+}
+
+.nv-transport:active {
+  transform: scale(0.96);
+}
+
+.nv-transport:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 4px;
+}
+
+.nv-transport.is-running {
+  border-color: rgb(255 111 102 / 45%);
+  box-shadow: 0 0 0 1px rgb(255 111 102 / 32%), 0 0 26px rgb(255 111 102 / 22%),
+    0 8px 20px rgb(0 0 0 / 45%);
+}
+
+/* Play triangle → stop square: both clip paths are 4-point polygons (the
+   triangle doubles its apex) so the shape interpolates cleanly. */
+.nv-shape {
+  width: 30px;
+  height: 30px;
+  background: var(--amber);
+  clip-path: polygon(24% 6%, 90% 50%, 90% 50%, 24% 94%);
+  transform: translateX(2px);
+  transition: clip-path 0.28s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.28s ease,
+    transform 0.28s ease;
+}
+
+.nv-transport.is-running .nv-shape {
+  background: var(--red);
+  clip-path: polygon(11% 11%, 89% 11%, 89% 89%, 11% 89%);
+  transform: translateX(0);
+}
+
+/* --- settings rows ------------------------------------------------------- */
+
+.nv-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.nv-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 46px;
+}
+
+.nv-row-label {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.nv-stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nv-bpb-value {
+  min-width: 30px;
+  text-align: center;
+  font-size: 19px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.nv-seg {
+  flex: 0 1 auto;
+}
+
+.nv-sub {
+  min-width: 46px;
+}
+
+.nv-glyph {
+  font-family: "Segoe UI Symbol", "Apple Symbols", "Noto Music", "Noto Sans Symbols 2", sans-serif;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.nv-trip {
+  font-size: 0.55em;
+  font-weight: 700;
+  vertical-align: super;
+  margin-left: 1px;
+}
+
+/* Label + segmented control need 288px of row; below ~348px the control would
+   break out of the card, so it drops to a full-width line of its own. */
+@media (max-width: 359px) {
+  .nv-row {
+    flex-wrap: wrap;
+  }
+
+  .nv-seg {
+    flex: 1 1 100%;
+  }
+
+  .nv-sub {
+    min-width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nv-dot.is-pulse,
+  .nv-dot.is-pulse .nv-dot-glow,
+  .nv-tap.is-flash {
+    animation: none;
+  }
+
+  .nv-shape,
+  .nv-transport {
+    transition: background-color 0.2s ease;
+  }
+}

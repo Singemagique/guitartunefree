@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">TrueString</string>
+    <string name="title_activity_main">TrueString</string>
+    <string name="package_name">app.truestring.tuner</string>
+    <string name="custom_url_scheme">app.truestring.tuner</string>
+</resources>

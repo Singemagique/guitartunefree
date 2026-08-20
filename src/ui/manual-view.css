@@ -1,0 +1,243 @@
+/* Manual tuner — headstock + string buttons. All classes prefixed .mv- */
+
+.mv {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mv-card {
+  padding: 10px 6px 14px;
+}
+
+/* Three rows of tuners flanking the headstock. Zero row gap keeps each row
+   centre at 1/6, 3/6, 5/6 of the stage — where the SVG's posts are drawn. */
+.mv-stage {
+  display: grid;
+  grid-template-columns: 56px 140px 56px;
+  grid-template-rows: repeat(3, 1fr);
+  column-gap: 6px;
+  min-height: 288px;
+  align-items: center;
+  justify-items: center;
+  justify-content: center;
+}
+
+.mv-headstock {
+  grid-area: 1 / 2 / 4 / 3;
+  align-self: stretch;
+  justify-self: center;
+  height: 100%;
+  width: auto;
+  max-width: 100%;
+}
+
+.mv-hs-body {
+  fill: var(--panel-2);
+  stroke: var(--line);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.mv-hs-crown {
+  fill: none;
+  stroke: rgb(240 233 220 / 9%);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.mv-hs-mark {
+  fill: var(--amber);
+  opacity: 0.5;
+}
+
+.mv-hs-nut {
+  fill: var(--text);
+  opacity: 0.45;
+}
+
+.mv-hs-strings line {
+  stroke: var(--muted);
+  stroke-linecap: round;
+  opacity: 0.45;
+  transition: stroke 0.2s ease, opacity 0.2s ease;
+}
+
+.mv-hs-strings line.is-active {
+  stroke: var(--amber);
+  opacity: 0.95;
+}
+
+.mv-hs-tuner line {
+  stroke: var(--line);
+  stroke-width: 3.5;
+  stroke-linecap: round;
+}
+
+.mv-hs-tuner circle {
+  fill: var(--panel);
+  stroke: var(--line);
+  stroke-width: 2;
+  transition: stroke 0.2s ease, fill 0.2s ease;
+}
+
+.mv-hs-tuner.is-active circle {
+  stroke: var(--amber);
+  fill: rgb(255 180 84 / 16%);
+}
+
+/* Left column bottom→top: low E, A, D. Right column top→bottom: G, B, high E. */
+.mv-pos-0 { grid-area: 3 / 1; }
+.mv-pos-1 { grid-area: 2 / 1; }
+.mv-pos-2 { grid-area: 1 / 1; }
+.mv-pos-3 { grid-area: 1 / 3; }
+.mv-pos-4 { grid-area: 2 / 3; }
+.mv-pos-5 { grid-area: 3 / 3; }
+
+.mv-string {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  color: var(--text);
+  font: inherit;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%), 0 1px 3px rgb(0 0 0 / 35%);
+  transition: border-color 0.18s ease, color 0.18s ease, transform 0.1s ease;
+}
+
+.mv-string:active {
+  transform: scale(0.93);
+}
+
+.mv-string:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 3px;
+}
+
+.mv-string.is-active {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.mv-label {
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.mv-pc {
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.mv-oct {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.mv-string.is-active .mv-oct {
+  color: var(--amber-deep);
+}
+
+.mv-ripple {
+  position: absolute;
+  inset: -2px;
+  border: 2px solid var(--amber);
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mv-string.is-ringing {
+  border-color: var(--amber);
+  animation: mv-ring 2s ease-out;
+}
+
+.mv-string.is-ringing .mv-ripple {
+  animation: mv-ripple 780ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+@keyframes mv-ring {
+  0% {
+    box-shadow: 0 0 26px 2px rgb(255 180 84 / 42%), inset 0 0 12px rgb(255 180 84 / 22%);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgb(255 180 84 / 0%), inset 0 0 0 rgb(255 180 84 / 0%);
+  }
+}
+
+@keyframes mv-ripple {
+  0% {
+    transform: scale(0.82);
+    opacity: 0.8;
+  }
+
+  100% {
+    transform: scale(1.55);
+    opacity: 0;
+  }
+}
+
+.mv-controls {
+  display: flex;
+  gap: 10px;
+}
+
+.mv-controls .btn {
+  flex: 1;
+  gap: 8px;
+}
+
+.mv-ico {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mv-loop.is-active {
+  border-color: var(--amber);
+  color: var(--amber);
+  background: rgb(255 180 84 / 10%);
+}
+
+.mv-hint {
+  margin: 0;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mv-string,
+  .mv-string.is-ringing,
+  .mv-string.is-ringing .mv-ripple,
+  .mv-hs-strings line,
+  .mv-hs-tuner circle {
+    animation: none;
+    transition: none;
+  }
+
+  .mv-string.is-ringing .mv-ripple {
+    opacity: 0.5;
+  }
+}
