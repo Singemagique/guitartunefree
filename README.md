@@ -28,7 +28,9 @@ npm run preview  # serve the production build
 
 ## Android
 
-The app ships as a Capacitor-wrapped Android project in [`android/`](android/).
+**Quick install:** grab `TrueString-v1.0.0-debug.apk` from the [latest release](https://github.com/Singemagique/guitartunefree/releases/latest) (or the `truestring-debug-apk` artifact on any [Android CI run](https://github.com/Singemagique/guitartunefree/actions/workflows/android.yml)).
+
+To build it yourself, the app ships as a Capacitor-wrapped Android project in [`android/`](android/).
 
 ```bash
 npm run cap:sync                 # build web assets + sync into the Android project
