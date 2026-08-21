@@ -1,4 +1,12 @@
-/* Metronome view. All classes prefixed .nv- */
+/* Metronome view. All classes prefixed .nv-
+   ---------------------------------------------------------------------------
+   NO FLASHING. Photosensitive epilepsy is triggered by luminance flashes, and a
+   metronome is stared at for long stretches, so the beat is carried entirely by
+   continuous motion (the pendulum) and by moving state (the counter and the
+   filled marker dot). Nothing in this file animates opacity, background,
+   box-shadow, text-shadow, filter or colour on a per-beat basis. The single
+   keyframe that touches colour, `nv-tap-ack`, fires once per user tap on the tap
+   tempo button — never on a beat. */
 
 .nv {
   display: flex;
@@ -138,11 +146,12 @@
   width: 100%;
 }
 
-.nv-tap.is-flash {
-  animation: nv-flash 260ms ease-out;
+/* Acknowledges the user's own tap — one highlight per press, never on a beat. */
+.nv-tap.is-tapped {
+  animation: nv-tap-ack 260ms ease-out;
 }
 
-@keyframes nv-flash {
+@keyframes nv-tap-ack {
   0% {
     border-color: var(--amber);
     color: var(--amber);
@@ -178,73 +187,50 @@
 /* --- beat stage ---------------------------------------------------------- */
 
 .nv-stage {
+  /* Width kept clear on the right for the tool rail, so nothing the pendulum
+     draws can ever reach the toggles. */
+  --nv-rail: 52px;
+
   position: relative;
   height: 190px;
   padding: 8px 10px;
   overflow: hidden;
 }
 
-/* The per-beat wash. A pseudo-element so the card's own gradient survives. */
-.nv-stage::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  border-radius: inherit;
-  background: var(--text);
-  opacity: 0;
-  pointer-events: none;
-}
-
-.nv-stage.is-flash::before {
-  animation: nv-wash 180ms ease-out;
-}
-
-.nv-stage.is-flash-accent::before {
-  background: var(--amber);
-  animation: nv-wash-accent 180ms ease-out;
-}
-
-@keyframes nv-wash {
-  from {
-    opacity: 0.11;
-  }
-
-  to {
-    opacity: 0;
-  }
-}
-
-@keyframes nv-wash-accent {
-  from {
-    opacity: 0.2;
-  }
-
-  to {
-    opacity: 0;
-  }
-}
-
 /* --- pendulum ------------------------------------------------------------ */
 
-/* An absolutely positioned <svg> takes its intrinsic 300x200 over the insets,
-   so the box it must fill is spelled out — otherwise the pivot is clipped. */
-.nv-pend {
+/* The box is what gets positioned; the <svg> fills it. An absolutely
+   positioned <svg> would otherwise take its intrinsic size over the insets and
+   clip the pivot, so its width/height are always spelled out. */
+.nv-pend-box {
   position: absolute;
   top: 4px;
-  right: 8px;
+  right: var(--nv-rail);
   bottom: 26px;
   left: 8px;
   z-index: 1;
-  width: calc(100% - 16px);
-  height: calc(100% - 30px);
-  max-width: none;
   pointer-events: none;
+}
+
+.nv-pend {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
   transition: opacity var(--dur) var(--ease);
 }
 
+/* Idle dimming is a state, not a pulse: it changes once, when you press stop. */
 .nv-stage.is-idle .nv-pend {
   opacity: 0.45;
+}
+
+/* Switched off, the arm holds at rest and steps back out of the way — the
+   counter, the marker dot and the click carry the beat instead. */
+.nv-stage.is-pend-off .nv-pend {
+  opacity: 0.22;
 }
 
 .nv-pend-guide {
@@ -277,6 +263,8 @@
   opacity: 0.9;
 }
 
+/* A constant halo, so the bob reads against the panel while it travels. It
+   never changes, so there is nothing here to flash. */
 .nv-pend-bob {
   fill: var(--amber);
   stroke: var(--amber-deep);
@@ -319,6 +307,7 @@
   font-variant-numeric: tabular-nums;
   color: var(--text);
   transform-origin: left center;
+  /* Static, for legibility over the swinging arm — not animated. */
   text-shadow: 0 2px 14px rgb(0 0 0 / 65%);
   will-change: transform;
 }
@@ -332,20 +321,31 @@
   opacity: 0.7;
 }
 
-.nv-count.is-hit {
-  animation: nv-count-hit 170ms ease-out;
+/* The whole per-beat emphasis: a 8% scale settling back over 120 ms. Transform
+   only — no brightness, no glow, no colour blink, nothing that changes the
+   luminance of the screen. */
+.nv-count.is-tick {
+  animation: nv-count-tick 120ms ease-out;
 }
 
-@keyframes nv-count-hit {
-  0% {
-    transform: scale(1.16);
-    filter: brightness(1.6);
+@keyframes nv-count-tick {
+  from {
+    transform: scale(1.08);
   }
 
-  100% {
+  to {
     transform: scale(1);
-    filter: brightness(1);
   }
+}
+
+/* Only shown in big view: which tempo the swing you are watching represents. */
+.nv-stage-bpm {
+  display: none;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
 }
 
 /* Silence must never read as a broken metronome. */
@@ -367,10 +367,30 @@
   flex: 0 0 auto;
 }
 
+/* A rail down the stage's right edge rather than a row across its top. Four
+   buttons side by side reach into the arc the bob sweeps at ±26°; stacked at
+   the edge they sit entirely outside it, so the pendulum keeps its full size
+   and nothing ever passes behind a toggle. */
 .nv-tools {
   display: flex;
+  flex-direction: column;
   flex: 0 0 auto;
   gap: 2px;
+}
+
+/* Four stacked 44px buttons are taller than a 190px stage, so the ink shrinks
+   to 36px and the pseudo-element pads the touch target back out to 44px, the
+   way .chip does in the shell. */
+.nv-stage .nv-tool {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+}
+
+.nv-stage .nv-tool::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
 }
 
 .nv-tool[aria-pressed="true"] {
@@ -379,25 +399,50 @@
   background: var(--amber-soft);
 }
 
-.nv-mute .nv-ico-off {
+/* The pendulum is on by default, so the usual "pressed is amber" would leave
+   the rail permanently lit. It lights up for the state worth noticing instead
+   — the swing switched off — exactly as mute lights up for a silent click. */
+.nv-pend-toggle[aria-pressed="true"] {
+  color: var(--muted);
+  border-color: transparent;
+  background: none;
+}
+
+.nv-pend-toggle[aria-pressed="false"] {
+  color: var(--amber);
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+}
+
+.nv-mute .nv-ico-off,
+.nv-big .nv-ico-off,
+.nv-pend-toggle .nv-ico-off {
   display: none;
 }
 
-.nv-mute[aria-pressed="true"] .nv-ico-on {
+.nv-mute[aria-pressed="true"] .nv-ico-on,
+.nv-big[aria-pressed="true"] .nv-ico-on,
+.nv-pend-toggle[aria-pressed="false"] .nv-ico-on {
   display: none;
 }
 
-.nv-mute[aria-pressed="true"] .nv-ico-off {
+.nv-mute[aria-pressed="true"] .nv-ico-off,
+.nv-big[aria-pressed="true"] .nv-ico-off,
+.nv-pend-toggle[aria-pressed="false"] .nv-ico-off {
   display: block;
 }
 
-/* --- beat dots ----------------------------------------------------------- */
+/* --- beat marker --------------------------------------------------------- */
 
+/* Position, not pulse. Exactly one dot is filled at a time and the fill steps
+   from dot to dot on each beat, then holds. The change is instant on purpose:
+   a fade between two states still reads as a blink out of the corner of an eye,
+   and holding still between beats is what makes the position legible. */
 .nv-dots {
   position: absolute;
   z-index: 2;
   left: 10px;
-  right: 10px;
+  right: var(--nv-rail);
   bottom: 8px;
   display: flex;
   flex-wrap: wrap;
@@ -407,115 +452,31 @@
 }
 
 .nv-dot {
-  position: relative;
   width: 13px;
   height: 13px;
   border: 1.5px solid var(--muted);
   border-radius: 50%;
+  background: transparent;
   opacity: 0.55;
-  will-change: transform;
+  transition: none;
 }
 
+/* The downbeat landmark: dot one keeps its amber ring whether or not the beat
+   is on it, so you can always tell where the bar starts. */
 .nv-dot-accent {
   border-color: var(--amber);
-  background: var(--amber);
   opacity: 0.8;
 }
 
-.nv-dot-glow {
-  position: absolute;
-  inset: -5px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgb(240 233 220 / 55%), rgb(240 233 220 / 0%) 70%);
-  opacity: 0;
-  pointer-events: none;
+.nv-dot.is-current {
+  border-color: var(--text);
+  background: var(--text);
+  opacity: 1;
 }
 
-.nv-dot-accent .nv-dot-glow {
-  background: radial-gradient(circle, rgb(255 180 84 / 75%), rgb(255 180 84 / 0%) 70%);
-}
-
-.nv-dot.is-pulse {
-  animation: nv-pulse 130ms ease-out;
-}
-
-.nv-dot.is-pulse .nv-dot-glow {
-  animation: nv-glow 300ms ease-out;
-}
-
-@keyframes nv-pulse {
-  0% {
-    transform: scale(1);
-  }
-
-  45% {
-    transform: scale(1.75);
-  }
-
-  100% {
-    transform: scale(1);
-  }
-}
-
-@keyframes nv-glow {
-  0% {
-    transform: scale(0.7);
-    opacity: 1;
-  }
-
-  100% {
-    transform: scale(1.6);
-    opacity: 0;
-  }
-}
-
-/* --- screen flash overlay ------------------------------------------------ */
-
-/* Lives on <body>, above the sheet and popover, so the beat is readable from
-   across a room. Never interactive. */
-/* A flashing frame around the viewport rather than a wash over it: brighter
-   and visible from across a room, yet it never sits on top of the text in
-   the middle of the screen, and it is a far smaller flashing area. */
-.nv-screen-flash {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  opacity: 0;
-  pointer-events: none;
-  box-shadow:
-    inset 0 0 0 10px var(--text),
-    inset 0 0 44px 10px rgb(240 233 220 / 55%);
-}
-
-.nv-screen-flash.is-flash {
-  animation: nv-screen 170ms ease-out;
-}
-
-.nv-screen-flash.is-flash-accent {
-  box-shadow:
-    inset 0 0 0 12px var(--amber),
-    inset 0 0 56px 12px rgb(255 180 84 / 65%);
-  animation: nv-screen-accent 200ms ease-out;
-}
-
-@keyframes nv-screen {
-  from {
-    opacity: 0.75;
-  }
-
-  to {
-    opacity: 0;
-  }
-}
-
-@keyframes nv-screen-accent {
-  from {
-    opacity: 1;
-  }
-
-  to {
-    opacity: 0;
-  }
+.nv-dot-accent.is-current {
+  border-color: var(--amber);
+  background: var(--amber);
 }
 
 /* --- transport ----------------------------------------------------------- */
@@ -573,6 +534,169 @@
   background: var(--red);
   clip-path: polygon(11% 11%, 89% 11%, 89% 89%, 11% 89%);
   transform: translateX(0);
+}
+
+/* The second copy of the transport, for big view only. Selector carries two
+   classes so it beats plain .nv-transport whatever the source order. */
+.nv-stage > .nv-stage-transport {
+  display: none;
+}
+
+/* --- big view ------------------------------------------------------------ */
+
+/* "See the beat from across the room" without a single flash: the same DOM and
+   the same rAF loop, scaled up until the motion itself carries the room. */
+.nv-stage.is-big {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding:
+    calc(env(safe-area-inset-top) + 12px)
+    calc(env(safe-area-inset-right) + 14px)
+    calc(env(safe-area-inset-bottom) + 14px)
+    calc(env(safe-area-inset-left) + 14px);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background:
+    radial-gradient(130% 58% at 50% -8%, rgb(255 180 84 / 10%), transparent 62%),
+    var(--bg);
+}
+
+/* Centred over the pendulum rather than stranded in a corner, and sized to its
+   own content so a very large counter can never squeeze the drawing out. */
+.nv-stage.is-big .nv-stage-head {
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding-top: 52px;
+}
+
+.nv-stage.is-big .nv-stage-read {
+  align-items: center;
+  gap: 6px;
+}
+
+.nv-stage.is-big .nv-count {
+  align-self: center;
+  transform-origin: center;
+  font-size: clamp(58px, 22vmin, 168px);
+}
+
+/* With the swing switched off the counter is the thing you read from across
+   the room, so it takes the room the pendulum was using. */
+.nv-stage.is-big.is-pend-off .nv-count {
+  font-size: clamp(88px, 40vmin, 300px);
+}
+
+/* Full-screen leaves room to spare, so the rail relaxes back into a row pinned
+   to the top corner, and the buttons back to the shared 44px. */
+.nv-stage.is-big .nv-tools {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 12px);
+  right: calc(env(safe-area-inset-right) + 14px);
+  z-index: 3;
+  flex-direction: row;
+  gap: 2px;
+}
+
+.nv-stage.is-big .nv-tool {
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+}
+
+.nv-stage.is-big .nv-tool::after {
+  content: none;
+}
+
+.nv-stage.is-big .nv-stage-bpm {
+  display: block;
+}
+
+/* Back into flow, taking every pixel the counter and transport leave. */
+.nv-stage.is-big .nv-pend-box {
+  position: relative;
+  inset: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Two things happen here. The ink only spans the middle ~55% of the 300-unit
+   viewBox, so bleeding the element past both edges (and letting the stage's
+   overflow:hidden trim the empty margins) is what lifts the arm to full-screen
+   length instead of leaving it width-capped. And because the drawing is
+   bottom-aligned inside its element, the element is given the viewBox's own
+   ratio and centred — otherwise a width-capped drawing sinks to the floor and
+   leaves a band of dead space under the counter. */
+.nv-stage.is-big .nv-pend {
+  top: 50%;
+  left: -36%;
+  width: 172%;
+  height: auto;
+  max-height: 100%;
+  aspect-ratio: 300 / 176;
+  transform: translateY(-50%);
+}
+
+/* Nothing is swinging, so the drawing gives up its bleed and sits inside the
+   box as a quiet marker of where the pendulum would be. */
+.nv-stage.is-big.is-pend-off .nv-pend {
+  left: 0;
+  width: 100%;
+}
+
+.nv-stage.is-big .nv-dots {
+  position: static;
+  flex: 0 0 auto;
+  gap: 14px;
+}
+
+.nv-stage.is-big .nv-dot {
+  width: 15px;
+  height: 15px;
+}
+
+.nv-stage.is-big .nv-stage-transport {
+  display: grid;
+  flex: 0 0 auto;
+  align-self: center;
+  width: 78px;
+  height: 78px;
+}
+
+/* The page behind must not scroll under a fixed overlay. Its own class rather
+   than the shell's `is-locked`, which the tuning sheet owns and clears. */
+body.nv-big-open {
+  overflow: hidden;
+}
+
+/* .view-root is the real scroll container, and it opens a stacking context at
+   z-index 1 — below the sticky header and tab bar. The big stage lives inside
+   it, so the whole container has to out-rank them for the overlay to cover the
+   app it is covering. */
+body.nv-big-open .view-root {
+  z-index: 60;
+  overflow: hidden;
+}
+
+/* Belt and braces. The stage is a modal while it is open — the header, the tab
+   bar and the rest of the view are inert, so neither shell dialog can be
+   reached — but if one is opened by some other path it must sit above the
+   overlay instead of painting underneath it. The popover lives inside the
+   header's own z-20 stacking context, so the header has to come up with it,
+   and only while it is open. */
+body.nv-big-open .scrim,
+body.nv-big-open .sheet {
+  z-index: 80;
+}
+
+body.nv-big-open .app-header:has(.popover:not([hidden])) {
+  z-index: 80;
 }
 
 /* --- settings rows ------------------------------------------------------- */
@@ -648,14 +772,14 @@
     min-width: 0;
   }
 
-  /* Below ~360px the stage is too narrow for the bob to clear the toggles at
-     the right-hand extreme, so the whole drawing sits lower and smaller. */
-  .nv-tools {
-    gap: 0;
+  /* Twelve dots have to fit beside the rail on a 320px screen. */
+  .nv-dots {
+    gap: 6px;
   }
 
-  .nv-pend {
-    height: calc(100% - 64px);
+  .nv-dot {
+    width: 12px;
+    height: 12px;
   }
 
   .nv-count {
@@ -730,6 +854,22 @@
     width: auto;
     text-indent: 0;
   }
+
+  /* The settings card is half a column here — narrower than the 288px the
+     label and the segmented control need side by side, and the max-width: 359px
+     rule above cannot fire because the *viewport* is wide. Same treatment: the
+     control drops to a full-width line of its own. */
+  .nv-row {
+    flex-wrap: wrap;
+  }
+
+  .nv-seg {
+    flex: 1 1 100%;
+  }
+
+  .nv-sub {
+    min-width: 0;
+  }
 }
 
 /* Landscape phones: keep the whole view inside one screen by shrinking the
@@ -740,6 +880,8 @@
   }
 
   .nv-stage {
+    --nv-rail: 84px;
+
     height: 132px;
   }
 
@@ -747,53 +889,90 @@
     font-size: 34px;
   }
 
+  /* A 132px stage holds two 36px buttons, not four, so the rail folds into two
+     columns — wider, but still clear of the arc the bob sweeps. Big view has
+     the whole screen and keeps its single row. */
+  .nv-stage:not(.is-big) .nv-tools {
+    display: grid;
+    grid-template-columns: repeat(2, 36px);
+  }
+
+  /* Half a 480px column, less the two-column rail, leaves ~124px of dot row.
+     Twelve dots have to fit on one line: a second line would wrap up into the
+     arm. */
+  .nv-dots {
+    gap: 2px;
+  }
+
+  .nv-dot {
+    width: 8px;
+    height: 8px;
+    border-width: 1.25px;
+  }
+
   .nv-transport {
     width: 60px;
     height: 60px;
   }
+
+  /* Big view in landscape: stacking would leave the arm a couple of centimetres
+     tall, so the readout moves beside the pendulum and the swing takes the
+     full height of the screen. */
+  .nv-stage.is-big {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "pend head"
+      "pend dots"
+      "pend transport";
+    column-gap: 18px;
+  }
+
+  .nv-stage.is-big .nv-pend-box {
+    grid-area: pend;
+  }
+
+  .nv-stage.is-big .nv-stage-head {
+    grid-area: head;
+    align-self: start;
+  }
+
+  .nv-stage.is-big .nv-dots {
+    grid-area: dots;
+    align-self: center;
+  }
+
+  .nv-stage.is-big .nv-stage-transport {
+    grid-area: transport;
+    align-self: end;
+    justify-self: center;
+    width: 68px;
+    height: 68px;
+  }
+
+  .nv-stage.is-big .nv-count {
+    font-size: clamp(44px, 26vmin, 132px);
+  }
+
+  .nv-stage.is-big.is-pend-off .nv-count {
+    font-size: clamp(56px, 34vmin, 190px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .nv-dot.is-pulse,
-  .nv-dot.is-pulse .nv-dot-glow,
-  .nv-tap.is-flash,
-  .nv-count.is-hit {
-    animation: none;
-  }
-
-  /* The pendulum still swings — that is the feature — but the washes drop to a
-     flat hold-then-clear step instead of a fade. The shell's blanket
-     reduced-motion rule forces every duration to 0.01ms, hence !important. */
-  .nv-stage.is-flash::before,
-  .nv-stage.is-flash-accent::before {
-    animation-name: nv-step-wash;
-    animation-duration: 200ms !important;
-    animation-timing-function: steps(1, end);
-  }
-
-  /* A frame pulsing around the whole viewport is exactly the kind of motion
-     this preference asks to be spared; the stage step and pendulum remain. */
-  .nv-screen-flash.is-flash,
-  .nv-screen-flash.is-flash-accent {
+  /* The pendulum defaults to off here — big view puts the swing on the whole
+     screen, and the beat is carried anyway by the counter, the marker dot, the
+     click and the vibration. metronome-view.ts reads the same query, and
+     .nv-pend-toggle overrides it in either direction. The counter's scale tick
+     is the one flourish left, so it goes. */
+  .nv-count.is-tick,
+  .nv-tap.is-tapped {
     animation: none;
   }
 
   .nv-shape,
   .nv-transport {
     transition: background-color 0.2s ease;
-  }
-}
-
-/* Held for 80 ms of the 200 ms, so even at 300 BPM the wash is clear for
-   most of every beat instead of piling into a permanent veil. */
-@keyframes nv-step-wash {
-  0%,
-  39% {
-    opacity: 0.1;
-  }
-
-  40%,
-  100% {
-    opacity: 0;
   }
 }

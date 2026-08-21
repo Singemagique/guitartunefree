@@ -40,6 +40,14 @@ const HOLD_MS = 600;
 const DETECT_MS = 25;
 const IN_TUNE_CENTS = 5;
 const IN_TUNE_FRAMES = 3;
+/** Release band. A plucked string wobbles a cent or two frame to frame, so a
+    symmetric ±5 gate strobes the card green whenever the player parks on the
+    boundary; green only lets go once the pitch is clearly out again. */
+const OUT_OF_TUNE_CENTS = 8;
+/** …and never before this long, so even a hard peg turn reads as one change. */
+const IN_TUNE_MIN_MS = 400;
+/** One short buzz per arrival at pitch, at most this often. */
+const VIBE_GAP_MS = 1000;
 /** Snap to a tuning's string only when the pitch is this close to it. */
 const STRING_WINDOW_CENTS = 120;
 
@@ -204,6 +212,8 @@ export function createTunerView(): ViewHandle {
   let lastConfidentAt = 0;
   let inTuneStreak = 0;
   let inTune = false;
+  let inTuneAt = 0;
+  let lastVibeAt = -Infinity;
   let relaxed = true;
   let activeIdx = -1;
 
@@ -284,11 +294,15 @@ export function createTunerView(): ViewHandle {
     el.classList.toggle('is-idle', on);
   }
 
-  function setInTune(on: boolean): void {
+  function setInTune(on: boolean, now: number): void {
     if (inTune === on) return;
     inTune = on;
+    inTuneAt = now;
     el.classList.toggle('is-intune', on);
-    if (on) navigator.vibrate?.(10);
+    if (on && now - lastVibeAt >= VIBE_GAP_MS) {
+      lastVibeAt = now;
+      navigator.vibrate?.(10);
+    }
   }
 
   function setActiveString(idx: number): void {
@@ -319,12 +333,15 @@ export function createTunerView(): ViewHandle {
     renderStrip();
   }
 
-  function relax(force: boolean): void {
+  /* The dwell floor is not consulted here: relaxing means HOLD_MS (600 ms) has
+     passed with no confident pitch, which is already longer than IN_TUNE_MIN_MS,
+     and a gauge with nothing to listen to must not claim to be in tune. */
+  function relax(force: boolean, now = performance.now()): void {
     if (relaxed && !force) return;
     relaxed = true;
     targetAngle = 0;
     inTuneStreak = 0;
-    setInTune(false);
+    setInTune(false, now);
     setIdleVisual(true);
     setActiveString(-1);
     setText(pcEl, '—');
@@ -335,7 +352,7 @@ export function createTunerView(): ViewHandle {
     setText(hintEl, 'Play a string');
   }
 
-  function applyPitch(freq: number): void {
+  function applyPitch(freq: number, now: number): void {
     let idx = -1;
     let cents = 0;
     let closest = Infinity;
@@ -373,17 +390,15 @@ export function createTunerView(): ViewHandle {
     setText(centsEl, formatCents(cents));
     setActiveString(idx);
 
-    if (Math.abs(cents) <= IN_TUNE_CENTS) {
+    const off = Math.abs(cents);
+    if (off <= IN_TUNE_CENTS) {
       if (inTuneStreak < IN_TUNE_FRAMES) inTuneStreak++;
-      if (inTuneStreak >= IN_TUNE_FRAMES) {
-        setInTune(true);
-        setText(hintEl, 'In tune');
-      }
+      if (inTuneStreak >= IN_TUNE_FRAMES) setInTune(true, now);
     } else {
       inTuneStreak = 0;
-      setInTune(false);
-      setText(hintEl, cents < 0 ? 'Tune up ↑' : 'Tune down ↓');
+      if (off > OUT_OF_TUNE_CENTS && now - inTuneAt >= IN_TUNE_MIN_MS) setInTune(false, now);
     }
+    setText(hintEl, inTune ? 'In tune' : cents < 0 ? 'Tune up ↑' : 'Tune down ↓');
   }
 
   function tick(now: number): void {
@@ -395,9 +410,9 @@ export function createTunerView(): ViewHandle {
       const result = detector.detect(frame);
       if (result) {
         lastConfidentAt = now;
-        applyPitch(result.freq);
+        applyPitch(result.freq, now);
       } else if (lastConfidentAt === 0 || now - lastConfidentAt > HOLD_MS) {
-        relax(false);
+        relax(false, now);
       }
     }
 

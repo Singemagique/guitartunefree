@@ -407,15 +407,23 @@
 
 /* ---------- motion preferences ---------- */
 
+/* Nothing here transitions position — every one of these is a colour or
+   opacity cross-fade of the in-tune state. style.css cuts every duration to
+   0.01ms !important under this preference, which would make the switch a hard
+   luminance edge: the opposite of what asking for less motion should buy you.
+   Win the cascade back for the cross-fades and drop the moving halo instead. */
 @media (prefers-reduced-motion: reduce) {
+  .tv-card,
+  .tv-card::before,
+  .tv-zone,
   .tv-needle,
   .tv-needle-blade,
-  .tv-zone,
-  .tv-metrics,
+  .tv-hub-dot,
   .tv-note,
-  .tv-card,
-  .tv-card::before {
-    transition-duration: 1ms;
+  .tv-metrics,
+  .tv-cents,
+  .tv-hint {
+    transition-duration: 200ms !important;
   }
 
   .tv-dot {
