@@ -9,7 +9,8 @@
 - **Auto tuner** — pitch detection from your microphone (McLeod Pitch Method / NSDF, sub-cent parabolic interpolation) with an analog-style needle gauge, cents readout, and per-string targeting that glows green when you're within ±5¢.
 - **Manual tuner** — a 3+3 headstock with tappable string buttons that play Karplus–Strong synthesized reference plucks. Loop a single string or strum all six.
 - **Tuning presets** — Standard E, Drop D, E♭ Standard, D Standard, Drop C, DADGAD, Open G, Open D, Open E, Open A. The selected tuning drives both tuners and is remembered.
-- **Metronome** — 30–300 BPM with sample-accurate Web Audio lookahead scheduling, accented downbeats, 1–12 beats per bar, quarter/eighth/triplet/sixteenth subdivisions, tap tempo, and animated beat dots. Keeps ticking while you switch tabs to tune.
+- **Metronome** — 30–300 BPM with sample-accurate Web Audio lookahead scheduling, accented downbeats, 1–12 beats per bar, quarter/eighth/triplet/sixteenth subdivisions, and "Tap the beat" tempo entry. Keeps ticking while you switch tabs to tune.
+- **Visual beat stage** — a swinging pendulum driven off the audio clock (it reaches each extreme exactly as the click sounds, output latency included), a big beat counter, a stage flash on every beat, an optional full-screen flash you can see from across the room, and a mute toggle for a silent visual metronome.
 - **A4 calibration** — 415–466 Hz reference (default 440).
 - **PWA** — installable, works offline after first load.
 
@@ -28,7 +29,7 @@ npm run preview  # serve the production build
 
 ## Android
 
-**Quick install:** grab `TrueString-v1.0.0-debug.apk` from the [latest release](https://github.com/Singemagique/guitartunefree/releases/latest) (or the `truestring-debug-apk` artifact on any [Android CI run](https://github.com/Singemagique/guitartunefree/actions/workflows/android.yml)).
+**Quick install:** grab `TrueString-v1.1.0-debug.apk` from the [latest release](https://github.com/Singemagique/guitartunefree/releases/latest) (or the `truestring-debug-apk` artifact on any [Android CI run](https://github.com/Singemagique/guitartunefree/actions/workflows/android.yml)).
 
 To build it yourself, the app ships as a Capacitor-wrapped Android project in [`android/`](android/).
 

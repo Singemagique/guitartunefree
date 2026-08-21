@@ -3,11 +3,11 @@
 .nv {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 .nv-panel {
-  padding: 16px 14px 14px;
+  padding: 14px 14px 12px;
 }
 
 /* --- tempo readout ------------------------------------------------------- */
@@ -48,7 +48,7 @@
 }
 
 .nv-tempo-name {
-  margin: 4px 0 5px;
+  margin: 3px 0 4px;
   text-align: center;
   font-size: 13px;
   font-style: italic;
@@ -72,7 +72,7 @@
 
   width: 100%;
   height: 44px;
-  margin: 0 0 5px;
+  margin: 0;
   padding: 0;
   background: transparent;
   appearance: none;
@@ -154,16 +154,256 @@
   }
 }
 
+/* Explains what the button is for; swapped for live feedback while tapping. */
+.nv-tap-hint {
+  margin: 7px 2px 0;
+  min-height: 17px;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--muted);
+  transition: color var(--dur) var(--ease);
+}
+
+.nv-tap-live {
+  margin: 7px 2px 0;
+  min-height: 17px;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.35;
+  font-weight: 600;
+  color: var(--amber);
+}
+
+/* --- beat stage ---------------------------------------------------------- */
+
+.nv-stage {
+  position: relative;
+  height: 190px;
+  padding: 8px 10px;
+  overflow: hidden;
+}
+
+/* The per-beat wash. A pseudo-element so the card's own gradient survives. */
+.nv-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: var(--text);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.nv-stage.is-flash::before {
+  animation: nv-wash 180ms ease-out;
+}
+
+.nv-stage.is-flash-accent::before {
+  background: var(--amber);
+  animation: nv-wash-accent 180ms ease-out;
+}
+
+@keyframes nv-wash {
+  from {
+    opacity: 0.11;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes nv-wash-accent {
+  from {
+    opacity: 0.2;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+/* --- pendulum ------------------------------------------------------------ */
+
+/* An absolutely positioned <svg> takes its intrinsic 300x200 over the insets,
+   so the box it must fill is spelled out — otherwise the pivot is clipped. */
+.nv-pend {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  bottom: 26px;
+  left: 8px;
+  z-index: 1;
+  width: calc(100% - 16px);
+  height: calc(100% - 30px);
+  max-width: none;
+  pointer-events: none;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.nv-stage.is-idle .nv-pend {
+  opacity: 0.45;
+}
+
+.nv-pend-guide {
+  stroke: var(--line);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.nv-pend-body {
+  fill: rgb(255 180 84 / 5%);
+  stroke: var(--line);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+/* The only thing that moves: one rotate about the pivot, per frame. The rod
+   runs to the bottom of the group's own box and the bob is centred on it, so
+   50% 100% of the fill box IS the pivot — and stays there if the viewBox or
+   the arm length change. */
+.nv-pend-arm {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  will-change: transform;
+}
+
+.nv-pend-rod {
+  stroke: var(--text);
+  stroke-width: 4;
+  stroke-linecap: round;
+  opacity: 0.9;
+}
+
+.nv-pend-bob {
+  fill: var(--amber);
+  stroke: var(--amber-deep);
+  stroke-width: 1.5;
+  filter: drop-shadow(0 0 9px rgb(255 180 84 / 45%));
+}
+
+.nv-pend-cap {
+  fill: var(--panel-2);
+  stroke: var(--amber-line);
+  stroke-width: 2;
+}
+
+/* --- counter + tools ----------------------------------------------------- */
+
+.nv-stage-head {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.nv-stage-read {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.nv-count {
+  display: inline-block;
+  align-self: flex-start;
+  min-width: 30px;
+  font-size: 46px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  transform-origin: left center;
+  text-shadow: 0 2px 14px rgb(0 0 0 / 65%);
+  will-change: transform;
+}
+
+.nv-count.is-accent {
+  color: var(--amber);
+}
+
+.nv-stage.is-idle .nv-count {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.nv-count.is-hit {
+  animation: nv-count-hit 170ms ease-out;
+}
+
+@keyframes nv-count-hit {
+  0% {
+    transform: scale(1.16);
+    filter: brightness(1.6);
+  }
+
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+
+/* Silence must never read as a broken metronome. */
+.nv-muted-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+
+.nv-muted-tag svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+
+.nv-tools {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.nv-tool[aria-pressed="true"] {
+  color: var(--amber);
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+}
+
+.nv-mute .nv-ico-off {
+  display: none;
+}
+
+.nv-mute[aria-pressed="true"] .nv-ico-on {
+  display: none;
+}
+
+.nv-mute[aria-pressed="true"] .nv-ico-off {
+  display: block;
+}
+
 /* --- beat dots ----------------------------------------------------------- */
 
 .nv-dots {
+  position: absolute;
+  z-index: 2;
+  left: 10px;
+  right: 10px;
+  bottom: 8px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  min-height: 26px;
-  padding: 2px 0;
+  gap: 9px;
 }
 
 .nv-dot {
@@ -229,12 +469,61 @@
   }
 }
 
+/* --- screen flash overlay ------------------------------------------------ */
+
+/* Lives on <body>, above the sheet and popover, so the beat is readable from
+   across a room. Never interactive. */
+/* A flashing frame around the viewport rather than a wash over it: brighter
+   and visible from across a room, yet it never sits on top of the text in
+   the middle of the screen, and it is a far smaller flashing area. */
+.nv-screen-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  opacity: 0;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 10px var(--text),
+    inset 0 0 44px 10px rgb(240 233 220 / 55%);
+}
+
+.nv-screen-flash.is-flash {
+  animation: nv-screen 170ms ease-out;
+}
+
+.nv-screen-flash.is-flash-accent {
+  box-shadow:
+    inset 0 0 0 12px var(--amber),
+    inset 0 0 56px 12px rgb(255 180 84 / 65%);
+  animation: nv-screen-accent 200ms ease-out;
+}
+
+@keyframes nv-screen {
+  from {
+    opacity: 0.75;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes nv-screen-accent {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
 /* --- transport ----------------------------------------------------------- */
 
 .nv-transport-row {
   display: flex;
   justify-content: center;
-  padding: 4px 0 2px;
+  padding: 2px 0 0;
 }
 
 .nv-transport {
@@ -291,8 +580,8 @@
 .nv-settings {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 10px;
+  padding: 10px 14px;
 }
 
 .nv-row {
@@ -300,7 +589,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 46px;
+  min-height: 44px;
 }
 
 .nv-row-label {
@@ -358,17 +647,153 @@
   .nv-sub {
     min-width: 0;
   }
+
+  /* Below ~360px the stage is too narrow for the bob to clear the toggles at
+     the right-hand extreme, so the whole drawing sits lower and smaller. */
+  .nv-tools {
+    gap: 0;
+  }
+
+  .nv-pend {
+    height: calc(100% - 64px);
+  }
+
+  .nv-count {
+    font-size: 40px;
+  }
+}
+
+/* Short portrait phones: keep the stage above the fold by trimming the
+   pieces that are only large for comfort. */
+@media (max-height: 720px) and (min-height: 561px) {
+  .nv {
+    gap: 10px;
+  }
+
+  .nv-panel {
+    padding: 10px 12px 10px;
+  }
+
+  .nv-bpm-value {
+    font-size: 52px;
+  }
+
+  .nv-stage {
+    height: 168px;
+  }
+
+  .nv-transport {
+    width: 64px;
+    height: 64px;
+  }
+}
+
+/* Landscape: two columns, with the stage and transport on the right so the
+   thing you watch is on screen without scrolling. */
+@media (max-height: 560px) and (min-width: 640px) {
+  .nv {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "bpm transport"
+      "bpm stage"
+      "settings stage";
+    align-items: start;
+  }
+
+  .nv > .nv-panel:first-child {
+    grid-area: bpm;
+  }
+
+  .nv-transport-row {
+    grid-area: transport;
+  }
+
+  .nv-stage {
+    grid-area: stage;
+    height: 150px;
+  }
+
+  .nv-settings {
+    grid-area: settings;
+  }
+
+  /* Half a 480px column is too narrow for the unit to overhang the numeral
+     without running into the + stepper, so it tucks underneath instead. */
+  .nv-bpm {
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .nv-bpm-unit {
+    width: auto;
+    text-indent: 0;
+  }
+}
+
+/* Landscape phones: keep the whole view inside one screen by shrinking the
+   pieces that are only large for comfort. */
+@media (max-height: 560px) {
+  .nv-bpm-value {
+    font-size: 44px;
+  }
+
+  .nv-stage {
+    height: 132px;
+  }
+
+  .nv-count {
+    font-size: 34px;
+  }
+
+  .nv-transport {
+    width: 60px;
+    height: 60px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .nv-dot.is-pulse,
   .nv-dot.is-pulse .nv-dot-glow,
-  .nv-tap.is-flash {
+  .nv-tap.is-flash,
+  .nv-count.is-hit {
+    animation: none;
+  }
+
+  /* The pendulum still swings — that is the feature — but the washes drop to a
+     flat hold-then-clear step instead of a fade. The shell's blanket
+     reduced-motion rule forces every duration to 0.01ms, hence !important. */
+  .nv-stage.is-flash::before,
+  .nv-stage.is-flash-accent::before {
+    animation-name: nv-step-wash;
+    animation-duration: 200ms !important;
+    animation-timing-function: steps(1, end);
+  }
+
+  /* A frame pulsing around the whole viewport is exactly the kind of motion
+     this preference asks to be spared; the stage step and pendulum remain. */
+  .nv-screen-flash.is-flash,
+  .nv-screen-flash.is-flash-accent {
     animation: none;
   }
 
   .nv-shape,
   .nv-transport {
     transition: background-color 0.2s ease;
+  }
+}
+
+/* Held for 80 ms of the 200 ms, so even at 300 BPM the wash is clear for
+   most of every beat instead of piling into a permanent veil. */
+@keyframes nv-step-wash {
+  0%,
+  39% {
+    opacity: 0.1;
+  }
+
+  40%,
+  100% {
+    opacity: 0;
   }
 }

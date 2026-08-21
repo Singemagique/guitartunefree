@@ -9,7 +9,7 @@ A free, lightweight, bespoke guitar tuner + metronome. Web PWA (vanilla TypeScri
 1. **Auto tuner** — listens on the microphone, detects pitch (MPM/NSDF), shows nearest target string of the selected tuning (or chromatic nearest note), cents offset on an analog-style needle gauge, green glow when within ±5 cents.
 2. **Manual tuner** — six string buttons laid out like a headstock; tapping plucks a synthesized (Karplus–Strong) reference tone for that string in the selected tuning. Loop toggle re-plucks every 2 s.
 3. **Tuning presets** — Standard E, Drop D, E♭ Standard, D Standard, Drop C, DADGAD, Open G, Open D, Open E, Open A. Selected tuning drives both tuners. Persisted to localStorage.
-4. **Metronome** — 30–300 BPM, beats-per-bar 1–12 with accented downbeat, subdivisions (quarter/eighth/triplet/sixteenth), tap tempo, sample-accurate Web Audio lookahead scheduling, animated beat dots.
+4. **Metronome** — 30–300 BPM, beats-per-bar 1–12 with accented downbeat, subdivisions (quarter/eighth/triplet/sixteenth), tap tempo, sample-accurate Web Audio lookahead scheduling, and a visual beat stage (pendulum, counter, flashes, mute — see v1.1 below).
 5. **Calibration** — A4 reference 415–466 Hz (default 440), in a small settings popover. Persisted.
 
 ## Design system (bespoke — "midnight stage")
@@ -195,3 +195,35 @@ Views build their own DOM (document.createElement / innerHTML templates are both
 - No console errors on load; tuner view usable with mic denied (shows guidance, rest of app fine).
 - All interactive elements keyboard-focusable with visible focus; aria-labels on icon-only buttons; `aria-pressed`/`aria-selected` where applicable.
 - 60 fps needle (rAF, transform-only animation, no layout thrash).
+
+## v1.1 — Visual metronome + tap tempo clarity
+
+### Engine additions (src/audio/metronome.ts)
+```ts
+export interface BeatClock {
+  beat: number;       // absolute main-beat count since start() (0-based, monotonic while running)
+  beatInBar: number;  // 0-based, already wrapped to the live beatsPerBar
+  phase: number;      // 0..1 progress through the current beat, in *audible* time
+  interval: number;   // seconds per main beat at the live bpm
+}
+class Metronome {
+  get muted(): boolean; set muted(v: boolean); // silences the click bus (5 ms ramp) without stopping the grid; onBeat/beatClock keep going
+  beatClock(): BeatClock | null;               // null when not running or before the first beat is audible
+}
+```
+`beatClock()` is computed from the scheduler's own record of scheduled main beats (keep the last few `{time, beat, beatInBar}` entries), evaluated at `ctx.currentTime - (outputLatency || baseLatency || 0)` so visuals line up with what the ear hears, not with graph-input time. `phase` uses the live `60/bpm` interval (the next beat may not be scheduled yet inside the 0.12 s lookahead at slow tempos) and is clamped to `[0, 1)`.
+
+### Beat stage (src/ui/metronome-view.ts + .css, `.nv-stage*` classes)
+Replaces the small dot row as the hero of the view, placed directly under the transport button — the thing you look at while playing:
+- **Pendulum**: inline SVG, pivot at bottom-center, arm swings ±26° and reaches an extreme exactly on each main beat (`angle = A · cos(π · (beat + phase))`), with the weight (bob) on the upper third of the arm. Driven by a `requestAnimationFrame` loop reading `metro.beatClock()` — transform-only updates on the arm group, no layout. The loop runs only while the metronome runs *and* the view is visible (start it in `show()`/transport start, cancel in `hide()`/stop). At rest the arm hangs straight up, dimmed.
+- **Beat counter**: large tabular numeral (1…beatsPerBar) in the stage, amber on the downbeat, cream otherwise; retriggers a short scale/glow animation via `onBeat`. Shows "–" dimmed when stopped.
+- **Bar dots**: the existing dots move inside the stage along its bottom edge (same pulse behaviour); still `aria-hidden`.
+- **Stage flash**: the stage background flashes on every beat (amber wash on the downbeat, cream wash otherwise, ~180 ms ease-out). Always on — it is the feature.
+- **Screen flash toggle** (`.nv-flash`, icon button with `aria-pressed`, label "Screen flash"): when on, a fixed full-viewport overlay (`pointer-events: none`, `aria-hidden`) flashes with each beat so the pulse is visible from across a room. Default off; persisted in localStorage key `truestring:metronome` as `{ screenFlash, muted }`.
+- **Mute toggle** (`.nv-mute`, icon button with `aria-pressed`, label "Mute click" / "Unmute click"): toggles `metro.muted`; while muted the transport, counter, pendulum and flashes all keep working — a silent visual metronome. A small muted glyph shows on the stage so silence is never mistaken for a bug.
+- `prefers-reduced-motion`: the pendulum still moves (it is the function the user asked for), but stage/screen flashes drop to a gentle opacity step and the counter animation is disabled.
+
+### Tap tempo (same view)
+- Button label becomes **"Tap the beat"**, with a caption under it (`.nv-tap-hint`, linked via `aria-describedby`): *"Tap along with any song and the BPM follows."*
+- Live feedback replaces the caption while tapping: after the first tap "Keep tapping…", from the second tap "Set to 132 BPM" (updates on every tap); reverts to the explanation 2.5 s after the last tap (matches the engine's 2 s tap window plus a grace).
+- The button still flashes on each tap; Space/Enter work as taps.
