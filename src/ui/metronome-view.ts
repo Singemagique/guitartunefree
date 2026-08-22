@@ -49,8 +49,8 @@ const TAP_REVERT_MS = 2500;
 
 /** Haptic beat: long enough to feel through a pocket, short enough not to buzz
     into the next beat even at 300 BPM (200 ms apart). */
-const VIBE_ACCENT_MS = 30;
-const VIBE_BEAT_MS = 15;
+const VIBE_ACCENT_MS = 40;
+const VIBE_BEAT_MS = 22;
 
 /** Absent on iOS Safari; the toggle is only built where it would do something. */
 const HAS_VIBRATE = typeof navigator.vibrate === 'function';

@@ -41,5 +41,7 @@
     <!-- Auto tuner: pitch detection from the device microphone -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Metronome: vibrate on beat (WebView ignores navigator.vibrate without this) -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 </manifest>
