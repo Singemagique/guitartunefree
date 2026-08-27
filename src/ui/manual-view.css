@@ -1,35 +1,63 @@
-/* Manual tuner — headstock + string buttons. All classes prefixed .mv- */
+/* Manual tuner — headstock, string buttons and the drone. All classes .mv-
+   ---------------------------------------------------------------------------
+   NO FLASHING. Nothing here animates on a repeating event: the string ring is a
+   one-shot response to the tap that caused it, and the drone's running state is
+   a static amber fill that changes once, when you press the button. */
 
 .mv {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 .mv-card {
-  padding: 10px 6px 14px;
+  padding: 8px 6px 10px;
 }
 
-/* Three rows of tuners flanking the headstock. Zero row gap keeps each row
-   centre at 1/6, 3/6, 5/6 of the stage — where the SVG's posts are drawn. */
+/* One grid row per tuner row — 4 to 8 strings make 2 to 4 of them, the left
+   column taking the surplus. The rows are equal and fixed, and the headstock
+   spans all of them at the drawing's own aspect ratio, so the posts drawn at
+   the centre of each row land on the buttons in it. */
 .mv-stage {
+  --mv-row-h: 96px;
+
+  /* 120 viewBox units wide per 89.33 units of row height. Changing ROW_UNITS or
+     the viewBox width in manual-view.ts means changing this. */
+  --mv-hs-ratio: 1.343;
+
   display: grid;
-  grid-template-columns: 56px 140px 56px;
-  grid-template-rows: repeat(3, 1fr);
+  grid-template-columns: 56px minmax(0, calc(var(--mv-row-h) * var(--mv-hs-ratio))) 56px;
   column-gap: 6px;
-  min-height: 288px;
   align-items: center;
   justify-items: center;
   justify-content: center;
 }
 
+.mv-stage[data-rows="2"] {
+  grid-template-rows: repeat(2, var(--mv-row-h));
+}
+
+.mv-stage[data-rows="3"] {
+  grid-template-rows: repeat(3, var(--mv-row-h));
+}
+
+/* Seven and eight strings would otherwise push the controls off a phone. */
+.mv-stage[data-rows="4"] {
+  --mv-row-h: 84px;
+
+  grid-template-rows: repeat(4, var(--mv-row-h));
+}
+
 .mv-headstock {
-  grid-area: 1 / 2 / 4 / 3;
+  grid-area: 1 / 2 / -1 / 3;
   align-self: stretch;
   justify-self: center;
   height: 100%;
-  width: auto;
-  max-width: 100%;
+  /* Spelled out rather than left to `width: auto`: the shared `max-width: 100%`
+     would cap the width on a narrow stage, and a box that is not the drawing's
+     own shape letterboxes it — which slides every post off its row. */
+  width: calc(var(--mv-row-h) * var(--mv-hs-ratio));
+  max-width: none;
 }
 
 .mv-hs-body {
@@ -86,13 +114,14 @@
   fill: rgb(255 180 84 / 16%);
 }
 
-/* Left column bottom→top: low E, A, D. Right column top→bottom: G, B, high E. */
-.mv-pos-0 { grid-area: 3 / 1; }
-.mv-pos-1 { grid-area: 2 / 1; }
-.mv-pos-2 { grid-area: 1 / 1; }
-.mv-pos-3 { grid-area: 1 / 3; }
-.mv-pos-4 { grid-area: 2 / 3; }
-.mv-pos-5 { grid-area: 3 / 3; }
+/* Left column bottom→top, right column top→bottom: a headstock from the front,
+   lowest string at bottom left. manual-view.ts assigns the row. */
+.mv-col-l { grid-column: 1; }
+.mv-col-r { grid-column: 3; }
+.mv-row-1 { grid-row: 1; }
+.mv-row-2 { grid-row: 2; }
+.mv-row-3 { grid-row: 3; }
+.mv-row-4 { grid-row: 4; }
 
 .mv-string {
   position: relative;
@@ -212,6 +241,12 @@
   stroke-linejoin: round;
 }
 
+/* Play triangle and stop square are filled shapes, not outlines. */
+.mv-ico-solid {
+  fill: currentcolor;
+  stroke: none;
+}
+
 .mv-loop.is-active {
   border-color: var(--amber);
   color: var(--amber);
@@ -222,9 +257,135 @@
   margin: 0;
   padding: 0 4px;
   color: var(--muted);
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.45;
   text-align: center;
+}
+
+/* --- drone ---------------------------------------------------------------- */
+
+.mv-drone {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 11px;
+}
+
+.mv-drone-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mv-drone-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.mv-drone-note {
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* Twelve pitch classes, two rows of six. The row gap matches the pills' own
+   44px touch padding so neighbouring targets meet but never overlap. */
+.mv-pcs {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px 6px;
+}
+
+.mv-pc-chip {
+  min-width: 0;
+  padding: 0 4px;
+}
+
+.mv-drone-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mv-octave {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgb(0 0 0 / 26%);
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / 40%);
+}
+
+.mv-step {
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.mv-oct-value {
+  min-width: 26px;
+  text-align: center;
+  font-size: 19px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* Sounding is `.btn-primary`, stopped is `.btn-ghost` — the shared primitives,
+   swapped once per press. Nothing pulses while the tone is running. */
+.mv-drone-toggle {
+  flex: 1 1 auto;
+  min-height: 48px;
+}
+
+.mv-drone-toggle .mv-ico-off {
+  display: none;
+}
+
+.mv-drone-toggle[aria-pressed="true"] .mv-ico-on {
+  display: none;
+}
+
+.mv-drone-toggle[aria-pressed="true"] .mv-ico-off {
+  display: block;
+}
+
+.mv-drone-hint {
+  padding: 0;
+  text-align: left;
+}
+
+/* --- small and short screens --------------------------------------------- */
+
+/* Six pills plus gaps need ~340px of card; below that they go four to a row. */
+@media (max-width: 359px) {
+  .mv-pcs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* Landscape phones: the whole stage has to fit above the fold. The drawing is
+   proportional, so shrinking the row height shrinks the headstock with it. */
+@media (max-height: 560px) {
+  .mv-stage[data-rows] {
+    --mv-row-h: 74px;
+  }
+
+  .mv {
+    gap: 12px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

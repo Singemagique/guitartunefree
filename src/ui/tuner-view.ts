@@ -6,6 +6,7 @@ import { centsBetween, nearestNote, prettyPc } from '../music/notes';
 import { tuningById, tuningNotes } from '../music/tunings';
 import { MicCapture } from '../audio/mic';
 import { PitchDetector } from '../audio/pitch';
+import { holdWake, releaseWake } from '../wakelock';
 
 export interface ViewHandle {
   el: HTMLElement;
@@ -459,6 +460,9 @@ export function createTunerView(): ViewHandle {
       frame = new Float32Array(capture.bufferSize);
       lastDetectAt = 0;
       lastConfidentAt = 0;
+      // Tuning is a hands-on, screen-watching job: nothing touches the display
+      // between plucks, so hold the screen awake for as long as the mic is open.
+      holdWake('tuner');
       setPhase('live');
       relax(true);
       rafId = requestAnimationFrame(tick);
@@ -479,6 +483,10 @@ export function createTunerView(): ViewHandle {
       mic.stop();
       mic = null;
     }
+    // Every exit from a live capture lands here — hide(), Retry after a
+    // failure, a denial that never reached 'live' — and releasing a reason that
+    // was never held is a no-op, so this is the one place the lock is freed.
+    releaseWake('tuner');
     detector = null;
     frame = null;
     if (phase === 'live' || phase === 'starting') setPhase('idle');

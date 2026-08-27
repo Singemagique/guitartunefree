@@ -7,8 +7,12 @@
 ## Features
 
 - **Auto tuner** — pitch detection from your microphone (McLeod Pitch Method / NSDF, sub-cent parabolic interpolation) with an analog-style needle gauge, cents readout, and per-string targeting that glows green when you're within ±5¢.
-- **Manual tuner** — a 3+3 headstock with tappable string buttons that play Karplus–Strong synthesized reference plucks. Loop a single string or strum all six.
-- **Tuning presets** — Standard E, Drop D, E♭ Standard, D Standard, Drop C, DADGAD, Open G, Open D, Open E, Open A. The selected tuning drives both tuners and is remembered.
+- **Manual tuner** — a headstock with tappable string buttons that play Karplus–Strong synthesized reference plucks. Loop a single string or strum them all.
+- **Instruments & tunings** — ten guitar presets (Standard E, Drop D, E♭ Standard, D Standard, Drop C, DADGAD, Open G, Open D, Open E, Open A) plus bass (4- and 5-string), ukulele, and mandolin — and a **custom tuning editor** (4–8 strings, any pitches). The selected tuning drives both tuners and is remembered.
+- **Drone** — a warm sustained reference tone on any pitch, for intonation practice. Keeps sounding while you tune or use the metronome.
+- **Speed trainer** — auto-raise the tempo (+N BPM every M bars up to a target) to build speed gradually.
+- **Gap training** — the click drops out every few bars while the pendulum and counter keep going, so you can test your internal clock.
+- **Screen stays awake** while the tuner listens, the metronome runs, or the drone sounds.
 - **Metronome** — 30–300 BPM with sample-accurate Web Audio lookahead scheduling, accented downbeats, 1–12 beats per bar, quarter/eighth/triplet/sixteenth subdivisions, and "Tap the beat" tempo entry. Keeps ticking while you switch tabs to tune.
 - **Visual beat stage** — a swinging pendulum driven off the audio clock (it reaches each extreme exactly as the click sounds, output latency included), a big beat counter, a beat marker that moves along the bar, a full-screen **Big view**, optional **vibrate on beat** (Android), and a mute toggle for a silent visual metronome. Deliberately **flash-free**: the beat is shown only through motion and position, never through blinking or luminance flashes, so it is safe for photosensitive players.
 - **A4 calibration** — 415–466 Hz reference (default 440).
@@ -29,7 +33,7 @@ npm run preview  # serve the production build
 
 ## Android
 
-**Quick install:** grab `TrueString-v1.1.2-debug.apk` from the [latest release](https://github.com/Singemagique/guitartunefree/releases/latest) (or the `truestring-debug-apk` artifact on any [Android CI run](https://github.com/Singemagique/guitartunefree/actions/workflows/android.yml)).
+**Quick install:** grab `TrueString-v1.2.0-debug.apk` from the [latest release](https://github.com/Singemagique/guitartunefree/releases/latest) (or the `truestring-debug-apk` artifact on any [Android CI run](https://github.com/Singemagique/guitartunefree/actions/workflows/android.yml)).
 
 To build it yourself, the app ships as a Capacitor-wrapped Android project in [`android/`](android/).
 

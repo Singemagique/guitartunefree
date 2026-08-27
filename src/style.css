@@ -529,10 +529,29 @@ body::after {
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  /* Keeps a control that Tab brings into view clear of the fade below. */
+  scroll-padding-bottom: 30px;
   /* Classic desktop scrollbars would otherwise pull the view off the centre
      axis the header and tab bar sit on; phones use overlay bars and ignore it. */
   scrollbar-width: thin;
   scrollbar-gutter: stable both-edges;
+}
+
+/* Content continues below the fold: fade the last line into the page instead of
+   letting the tab bar slice it mid-glyph. main.ts sets the flag, and clears it
+   at the end of the scroll, so nothing is ever dimmed that has nothing under it. */
+.view-root.is-clipped {
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 26px), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 26px), transparent);
+}
+
+/* The metronome's big view is a fixed overlay *inside* this container, and a
+   mask applies to everything the container paints — the overlay included. It
+   owns the screen while it is open and nothing behind it scrolls, so the fade
+   comes off (see body.nv-big-open in metronome-view.css). */
+body.nv-big-open .view-root.is-clipped {
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 .view-root > *:not([hidden]) {
@@ -722,6 +741,28 @@ body.is-locked .view-root {
   color: var(--muted);
 }
 
+/* What the list has to say when something changed behind the player's back —
+   one static line, no timers and no blinking. It stays in the DOM while empty
+   (a live region has to exist before it has anything to announce) and collapses
+   to nothing until it does. */
+.sheet-note {
+  margin: 0 2px 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-sm);
+  background: var(--amber-soft);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.sheet-note:empty {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 .sheet-list {
   display: flex;
   flex-direction: column;
@@ -810,6 +851,237 @@ body.is-locked .view-root {
 .sheet-item[aria-current="true"] .sheet-item-check {
   opacity: 1;
   transform: scale(1);
+}
+
+/* Instrument group heading: same voice as the sheet title, one level quieter. */
+.sheet-section {
+  padding: 14px 12px 5px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.sheet-section:first-child {
+  padding-top: 4px;
+}
+
+/* A custom tuning's row: the name selects it, the pencil opens the editor. */
+.sheet-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sheet-row .sheet-item {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sheet-row-edit {
+  flex: 0 0 auto;
+}
+
+.sheet-row-edit:hover {
+  color: var(--amber);
+}
+
+.sheet-add .sheet-item-name {
+  color: var(--amber);
+}
+
+.sheet-add-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  color: var(--amber);
+}
+
+.sheet-add-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+/* ------------------------------------------------- tuning editor -- */
+
+/* Swapped in place of .sheet-list inside the same sheet, so it inherits the
+   scrim, the inert shell and the Escape handling. */
+.editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 2px;
+}
+
+.editor-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-height: 0;
+  padding: 2px 2px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scroll-padding-bottom: 26px;
+}
+
+/* Same fade as the view root: a string row that carries on under the pinned
+   preview reads as scrollable rather than sliced. */
+.editor-scroll.is-clipped {
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 22px), transparent);
+}
+
+.editor-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.editor-name {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  /* 16px is the floor that keeps iOS from zooming the page on focus. */
+  font-size: 16px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.26);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: border-color var(--dur) var(--ease);
+}
+
+.editor-name::placeholder {
+  color: var(--muted);
+}
+
+.editor-name:focus {
+  border-color: var(--amber-line);
+}
+
+.editor-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 54px;
+  padding: 3px 3px 3px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.editor-strings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.editor-string-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.editor-stepper {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.26);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.editor-value,
+.editor-note {
+  min-width: 3.6ch;
+  padding: 0 4px;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* Pinned between the scroll box and the actions: the tuning you are building and
+   the one destructive control, both out of the scroller so neither can be
+   scrolled off the screen that owns them. */
+.editor-foot {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 8px 2px 0;
+}
+
+.editor-preview {
+  padding: 11px 12px;
+  border: 1px dashed rgba(255, 180, 84, 0.3);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  color: var(--amber);
+}
+
+.editor-delete {
+  width: 100%;
+  border-color: rgba(255, 111, 102, 0.32);
+  color: var(--red);
+}
+
+.editor-delete:hover {
+  border-color: var(--red);
+  background: rgba(255, 111, 102, 0.1);
+}
+
+/* Second tap confirms. A static swap — colour and label, no blinking. */
+.editor-delete.is-armed {
+  border-color: var(--red);
+  background: var(--red);
+  color: var(--ink);
+}
+
+.editor-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 10px 2px 2px;
+  border-top: 1px solid var(--line);
+}
+
+.editor-actions .btn {
+  flex: 1 1 0;
+}
+
+/* Landscape phones: the sheet is the whole task while it is open, and 78% of a
+   375px-tall viewport leaves the editor with barely one string row. */
+@media (max-height: 480px) {
+  .sheet {
+    max-height: 92vh;
+    max-height: 92dvh;
+  }
+
+  /* Every pixel the pinned footer gives back is more of a string row. */
+  .editor-foot {
+    gap: 4px;
+    padding-top: 6px;
+  }
+
+  .editor-preview {
+    padding: 7px 12px;
+  }
 }
 
 /* --------------------------------------------- calibration popover -- */

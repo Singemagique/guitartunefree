@@ -3,7 +3,8 @@ export interface PitchResult {
   clarity: number;
 }
 
-const MIN_FREQ = 55;
+/** Low B of a 5-string bass is 30.87 Hz; leave a little room under it. */
+const MIN_FREQ = 28;
 const MAX_FREQ = 1100;
 const MIN_RMS = 0.005;
 const MIN_CLARITY = 0.88;

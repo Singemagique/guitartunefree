@@ -3,18 +3,19 @@ import { ensureRunning, getAudioContext } from './context';
 const DENIED = ['NotAllowedError', 'NotFoundError', 'SecurityError'];
 
 /** Lowest pitch the detector accepts, mirroring MIN_FREQ in pitch.ts. */
-const FLOOR_HZ = 55;
-/** The frame size every mainstream rate lands on, and the spec's baseline. */
+const FLOOR_HZ = 28;
+/** The smallest frame worth handing the detector. */
 const MIN_FRAME = 2048;
 /** AnalyserNode refuses an fftSize above this. */
 const MAX_FRAME = 32768;
 
 /**
  * The detector needs a lag of one FLOOR_HZ period and never looks past half the
- * frame, so the frame has to span two of them. A fixed 2048 covers that at
- * 44.1/48 kHz but bottoms out at 93.75 Hz on a 96 kHz interface, which silently
- * hides the lowest string of every tuning; deriving the size from the live rate
- * keeps the floor at ~55 Hz and the window at ~45 ms whatever the hardware runs.
+ * frame, so the frame has to span two of them. A fixed size cannot: 2048 tops
+ * out at 43 Hz even at 44.1 kHz — no bass at all — and bottoms out at 93.75 Hz
+ * on a 96 kHz interface, hiding the lowest string of every tuning. Deriving the
+ * size from the live rate keeps the floor at FLOOR_HZ whatever the hardware
+ * runs, and lands on 4096 (~90 ms) at both 44.1 and 48 kHz.
  */
 function frameSize(sampleRate: number): number {
   if (!Number.isFinite(sampleRate) || sampleRate <= 0) return MIN_FRAME;

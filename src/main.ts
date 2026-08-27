@@ -2,7 +2,14 @@
 import './style.css';
 import type { AppState } from './state';
 import { getState, setState, subscribe } from './state';
-import { TUNINGS, tuningById } from './music/tunings';
+import type { Tuning, TuningGroup } from './music/tunings';
+import {
+  allTunings,
+  deleteCustomTuning,
+  noteName,
+  saveCustomTuning,
+  tuningById,
+} from './music/tunings';
 import { createTunerView } from './ui/tuner-view';
 import { createManualView } from './ui/manual-view';
 import { createMetronomeView } from './ui/metronome-view';
@@ -27,6 +34,17 @@ const A4_MAX = 466;
 const A4_DEFAULT = 440;
 const SHEET_EXIT_MS = 280;
 
+/** Section order in the tuning sheet; empty groups are skipped. */
+const GROUP_ORDER: readonly TuningGroup[] = ['Guitar', 'Bass', 'Ukulele', 'Mandolin', 'Custom'];
+const NAME_MAX = 24;
+const NAME_FALLBACK = 'My tuning';
+const STRINGS_MIN = 4;
+const STRINGS_MAX = 8;
+const MIDI_MIN = 23;
+const MIDI_MAX = 81;
+/** Delete asks twice; the armed button falls back to its label after this long. */
+const DELETE_ARM_MS = 3500;
+
 const SVG = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"';
 
 const ICONS = {
@@ -40,6 +58,7 @@ const ICONS = {
   close: `<svg ${SVG} stroke-width="2"><path d="M6.6 6.6 17.4 17.4M17.4 6.6 6.6 17.4"/></svg>`,
   minus: `<svg ${SVG} stroke-width="2.2"><path d="M6.4 12h11.2"/></svg>`,
   plus: `<svg ${SVG} stroke-width="2.2"><path d="M12 6.4v11.2M6.4 12h11.2"/></svg>`,
+  pencil: `<svg ${SVG} stroke-width="1.8"><path d="m4.4 19.6 4.6-1.2 9.5-9.5a2.4 2.4 0 0 0-3.4-3.4l-9.5 9.5Z"/><path d="m13.4 7.1 3.5 3.5"/></svg>`,
 };
 
 const TAB_ICONS: Record<TabId, string> = {
@@ -48,14 +67,103 @@ const TAB_ICONS: Record<TabId, string> = {
   metronome: ICONS.metronome,
 };
 
+/** Views that keep making sound after you leave them announce it on `window`;
+    each one lights the running dot on its own tab. */
+const RUNNING_SOURCES: readonly { event: string; tab: TabId; label: string }[] = [
+  { event: 'truestring:metronome-running', tab: 'metronome', label: 'Metronome running' },
+  { event: 'truestring:drone-running', tab: 'manual', label: 'Drone sounding' },
+];
+
+const DOT_TABS = new Set<TabId>(RUNNING_SOURCES.map((source) => source.tab));
+
 function q<T extends HTMLElement>(selector: string): T {
   const found = document.querySelector<T>(selector);
   if (!found) throw new Error(`TrueString: missing element ${selector}`);
   return found;
 }
 
+function setText(node: Element, text: string): void {
+  if (node.textContent !== text) node.textContent = text;
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+/**
+ * Flags a scroll box whose content carries on past its bottom edge, so the CSS
+ * can fade the last row instead of slicing it against whatever sits below.
+ * Content that grows without moving the box — a string row added, a card
+ * unfolded — never resizes the box itself, so the parts that do grow are watched
+ * as well. Returns a manual re-check for changes no observer sees.
+ */
+function fadeOnOverflow(box: HTMLElement, grows: readonly Element[] = []): () => void {
+  const update = (): void => {
+    box.classList.toggle('is-clipped', box.scrollHeight - box.clientHeight - box.scrollTop > 1);
+  };
+  box.addEventListener('scroll', update, { passive: true });
+  const observer = new ResizeObserver(update);
+  observer.observe(box);
+  for (const node of grows) observer.observe(node);
+  return update;
+}
+
+/**
+ * Fires `step` on press and then repeats while held, tightening the interval so
+ * a long hold sweeps quickly. Keyboard activation holds too (Enter/Space), so
+ * the button's default click is suppressed to avoid a double step. A stepper
+ * that disables itself at its limit stops the repeat: a disabled button never
+ * receives the pointerup that would otherwise end it.
+ */
+function attachRepeat(btn: HTMLButtonElement, step: () => void): void {
+  let timer = 0;
+  let reps = 0;
+
+  const end = (): void => {
+    window.clearTimeout(timer);
+    timer = 0;
+    reps = 0;
+  };
+  const tick = (): void => {
+    if (btn.disabled) {
+      end();
+      return;
+    }
+    step();
+    reps += 1;
+    timer = window.setTimeout(tick, Math.max(36, 150 - reps * 10));
+  };
+  const begin = (): void => {
+    end();
+    step();
+    if (btn.disabled) return;
+    timer = window.setTimeout(tick, 420);
+  };
+
+  btn.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    try {
+      btn.setPointerCapture(e.pointerId);
+    } catch {
+      /* a synthetic event has no active pointer to capture */
+    }
+    begin();
+  });
+  btn.addEventListener('pointerup', end);
+  btn.addEventListener('pointercancel', end);
+  btn.addEventListener('blur', end);
+  btn.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    if (!e.repeat) begin();
+  });
+  btn.addEventListener('keyup', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') end();
+  });
+}
+
 function tabMarkup(id: TabId): string {
-  const dot = id === 'metronome' ? '<span class="tab-dot" aria-hidden="true"></span>' : '';
+  const dot = DOT_TABS.has(id) ? '<span class="tab-dot" aria-hidden="true"></span>' : '';
   return `<button type="button" class="tab" role="tab" id="tab-${id}" data-tab="${id}" aria-controls="panel-${id}" aria-selected="false" tabindex="-1">
       <span class="tab-icon">${TAB_ICONS[id]}</span>
       <span class="tab-label">${TAB_LABELS[id]}</span>${dot}
@@ -96,17 +204,42 @@ root.innerHTML = `
       <div class="tabbar-inner" role="tablist" aria-label="Sections">
         ${TAB_IDS.map(tabMarkup).join('')}
       </div>
-      <span class="sr-only" id="metronome-status" role="status"></span>
+      <span class="sr-only" id="running-status" role="status"></span>
     </nav>
   </div>
   <div class="scrim" id="sheet-scrim" hidden></div>
   <div class="sheet" id="tuning-sheet" role="dialog" aria-modal="true" aria-labelledby="tuning-sheet-title" hidden>
     <span class="sheet-grip" aria-hidden="true"></span>
     <div class="sheet-head">
-      <h2 class="sheet-title" id="tuning-sheet-title">Tuning</h2>
+      <h2 class="sheet-title" id="tuning-sheet-title" tabindex="-1">Tuning</h2>
       <button type="button" class="icon-btn" id="sheet-close" aria-label="Close tuning list">${ICONS.close}</button>
     </div>
+    <p class="sheet-note" id="sheet-note" role="status"></p>
     <div class="sheet-list" id="tuning-list"></div>
+    <form class="editor" id="tuning-editor" hidden>
+      <div class="editor-scroll" id="editor-scroll">
+        <label class="editor-label" for="editor-name">Name</label>
+        <input class="editor-name" id="editor-name" type="text" maxlength="${NAME_MAX}"
+          autocomplete="off" autocapitalize="words" spellcheck="false" placeholder="${NAME_FALLBACK}">
+        <div class="editor-row">
+          <span class="editor-label">Strings</span>
+          <div class="editor-stepper">
+            <button type="button" class="icon-btn" id="editor-count-dec" aria-label="Remove the highest string">${ICONS.minus}</button>
+            <span class="editor-value" id="editor-count" aria-live="polite">6</span>
+            <button type="button" class="icon-btn" id="editor-count-inc" aria-label="Add a string">${ICONS.plus}</button>
+          </div>
+        </div>
+        <div class="editor-strings" id="editor-strings"></div>
+      </div>
+      <div class="editor-foot">
+        <p class="editor-preview" id="editor-preview"></p>
+        <button type="button" class="btn btn-ghost editor-delete" id="editor-delete" hidden>Delete tuning</button>
+      </div>
+      <div class="editor-actions">
+        <button type="button" class="btn btn-ghost" id="editor-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
   </div>
 `;
 
@@ -122,9 +255,21 @@ const a4Inc = q<HTMLButtonElement>('#a4-inc');
 const a4Reset = q<HTMLButtonElement>('#a4-reset');
 const scrim = q('#sheet-scrim');
 const sheet = q('#tuning-sheet');
+const sheetTitle = q('#tuning-sheet-title');
 const sheetClose = q<HTMLButtonElement>('#sheet-close');
+const sheetNote = q('#sheet-note');
 const tuningList = q('#tuning-list');
-const metronomeStatus = q('#metronome-status');
+const editorForm = q<HTMLFormElement>('#tuning-editor');
+const editorScroll = q('#editor-scroll');
+const editorName = q<HTMLInputElement>('#editor-name');
+const editorCount = q('#editor-count');
+const editorCountDec = q<HTMLButtonElement>('#editor-count-dec');
+const editorCountInc = q<HTMLButtonElement>('#editor-count-inc');
+const editorStrings = q('#editor-strings');
+const editorPreview = q('#editor-preview');
+const editorDelete = q<HTMLButtonElement>('#editor-delete');
+const editorCancel = q<HTMLButtonElement>('#editor-cancel');
+const runningStatus = q('#running-status');
 
 const tabs: Record<TabId, HTMLButtonElement> = {
   tuner: q<HTMLButtonElement>('#tab-tuner'),
@@ -146,6 +291,11 @@ for (const id of TAB_IDS) {
   view.el.hidden = true;
   viewRoot.append(view.el);
 }
+
+fadeOnOverflow(
+  viewRoot,
+  TAB_IDS.map((id) => views[id].el),
+);
 
 /* ---------- tabs ---------- */
 
@@ -192,7 +342,20 @@ q('.tabbar-inner').addEventListener('keydown', (e) => {
 
 /* ---------- tuning sheet ---------- */
 
-const tuningItems = TUNINGS.map((tuning) => {
+type SheetMode = 'list' | 'editor';
+
+let sheetMode: SheetMode = 'list';
+/** The list's primary rows: one per tuning, then the "New tuning" row. */
+let rowButtons: HTMLButtonElement[] = [];
+
+function sectionHead(group: TuningGroup): HTMLElement {
+  const head = document.createElement('p');
+  head.className = 'sheet-section';
+  head.textContent = group;
+  return head;
+}
+
+function tuningRow(tuning: Tuning, currentId: string): HTMLElement {
   const name = document.createElement('span');
   name.className = 'sheet-item-name';
   name.textContent = tuning.name;
@@ -213,14 +376,266 @@ const tuningItems = TUNINGS.map((tuning) => {
   item.type = 'button';
   item.className = 'sheet-item';
   item.dataset.tuningId = tuning.id;
+  if (tuning.id === currentId) item.setAttribute('aria-current', 'true');
   item.append(text, check);
   item.addEventListener('click', () => {
     setState({ tuningId: tuning.id });
     closeSheet();
   });
+  rowButtons.push(item);
+
+  if (tuning.group !== 'Custom') return item;
+
+  const edit = document.createElement('button');
+  edit.type = 'button';
+  edit.className = 'icon-btn sheet-row-edit';
+  edit.setAttribute('aria-label', `Edit ${tuning.name}`);
+  edit.innerHTML = ICONS.pencil;
+  edit.addEventListener('click', () => openEditor(tuning));
+
+  const row = document.createElement('div');
+  row.className = 'sheet-row';
+  row.append(item, edit);
+  return row;
+}
+
+function addRow(): HTMLElement {
+  const icon = document.createElement('span');
+  icon.className = 'sheet-add-icon';
+  icon.innerHTML = ICONS.plus;
+
+  const label = document.createElement('span');
+  label.className = 'sheet-item-name';
+  label.textContent = 'New tuning';
+
+  const item = document.createElement('button');
+  item.type = 'button';
+  item.className = 'sheet-item sheet-add';
+  item.append(icon, label);
+  item.addEventListener('click', () => openEditor(null));
+  rowButtons.push(item);
   return item;
+}
+
+function renderList(): void {
+  const currentId = getState().tuningId;
+  const tunings = allTunings();
+  tuningList.textContent = '';
+  rowButtons = [];
+  for (const group of GROUP_ORDER) {
+    const entries = tunings.filter((t) => t.group === group);
+    // Custom always shows: its "New tuning" row is the only way into the editor.
+    if (entries.length === 0 && group !== 'Custom') continue;
+    tuningList.append(sectionHead(group), ...entries.map((t) => tuningRow(t, currentId)));
+    if (group === 'Custom') tuningList.append(addRow());
+  }
+}
+
+/* ---------- tuning editor ---------- */
+
+interface StringRow {
+  name: HTMLElement;
+  note: HTMLElement;
+  dec: HTMLButtonElement;
+  inc: HTMLButtonElement;
+}
+
+let editorId: string | null = null;
+let editorMidis: number[] = [];
+let stringRows: StringRow[] = [];
+let editorReturnFocus: HTMLElement | null = null;
+let deleteArmed = false;
+let deleteTimer = 0;
+
+const refreshEditorFade = fadeOnOverflow(editorScroll, [editorStrings]);
+
+function clampMidi(midi: number): number {
+  return clamp(Math.round(midi), MIDI_MIN, MIDI_MAX);
+}
+
+/** Disabling the focused button would drop focus to <body> and break the
+    sheet's Tab trap, so hand it across the stepper before the flag flips. */
+function setStepDisabled(btn: HTMLButtonElement, off: boolean, alt: HTMLButtonElement): void {
+  if (off && !btn.disabled && document.activeElement === btn) {
+    (alt.disabled ? sheetClose : alt).focus();
+  }
+  btn.disabled = off;
+}
+
+function stepButton(icon: string, step: () => void): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'icon-btn';
+  btn.innerHTML = icon;
+  attachRepeat(btn, step);
+  return btn;
+}
+
+function buildStringRows(): void {
+  editorStrings.textContent = '';
+  stringRows = editorMidis.map((_, i) => {
+    const name = document.createElement('span');
+    name.className = 'editor-string-name';
+
+    const note = document.createElement('span');
+    note.className = 'editor-note';
+    note.setAttribute('aria-live', 'polite');
+
+    const dec = stepButton(ICONS.minus, () => nudgeString(i, -1));
+    const inc = stepButton(ICONS.plus, () => nudgeString(i, 1));
+
+    const stepper = document.createElement('div');
+    stepper.className = 'editor-stepper';
+    stepper.append(dec, note, inc);
+
+    const row = document.createElement('div');
+    row.className = 'editor-row';
+    row.append(name, stepper);
+    editorStrings.append(row);
+    return { name, note, dec, inc };
+  });
+}
+
+function nudgeString(i: number, delta: number): void {
+  const next = clampMidi(editorMidis[i] + delta);
+  if (next === editorMidis[i]) return;
+  editorMidis[i] = next;
+  syncEditor();
+}
+
+function setStringCount(next: number): void {
+  const count = clamp(next, STRINGS_MIN, STRINGS_MAX);
+  if (count === editorMidis.length) return;
+  // Growing copies the last string, shrinking drops it — the highest either way.
+  while (editorMidis.length < count) editorMidis.push(editorMidis[editorMidis.length - 1]);
+  while (editorMidis.length > count) editorMidis.pop();
+  buildStringRows();
+  syncEditor();
+}
+
+function syncEditor(): void {
+  const count = editorMidis.length;
+  setText(editorCount, String(count));
+  setStepDisabled(editorCountDec, count <= STRINGS_MIN, editorCountInc);
+  setStepDisabled(editorCountInc, count >= STRINGS_MAX, editorCountDec);
+
+  for (let i = 0; i < stringRows.length; i++) {
+    const row = stringRows[i];
+    const midi = editorMidis[i];
+    // Strings are stored low → high and numbered the way a player counts them,
+    // so the lowest string carries the highest number.
+    const ordinal = count - i;
+    setText(row.name, `String ${ordinal}`);
+    setText(row.note, noteName(midi));
+    row.dec.setAttribute('aria-label', `Lower string ${ordinal} a semitone`);
+    row.inc.setAttribute('aria-label', `Raise string ${ordinal} a semitone`);
+    setStepDisabled(row.dec, midi <= MIDI_MIN, row.inc);
+    setStepDisabled(row.inc, midi >= MIDI_MAX, row.dec);
+  }
+
+  setText(editorPreview, editorMidis.map(noteName).join(' '));
+  refreshEditorFade();
+}
+
+function setSheetMode(mode: SheetMode): void {
+  sheetMode = mode;
+  const editing = mode === 'editor';
+  tuningList.hidden = editing;
+  editorForm.hidden = !editing;
+  // A note belongs to the screen that raised it; every switch is a fresh one.
+  setText(sheetNote, '');
+  setText(sheetTitle, editing ? (editorId ? 'Edit tuning' : 'New tuning') : 'Tuning');
+  sheetClose.setAttribute('aria-label', editing ? 'Close tuning editor' : 'Close tuning list');
+}
+
+function disarmDelete(): void {
+  window.clearTimeout(deleteTimer);
+  deleteTimer = 0;
+  if (!deleteArmed) return;
+  deleteArmed = false;
+  editorDelete.classList.remove('is-armed');
+  setText(editorDelete, 'Delete tuning');
+}
+
+function openEditor(tuning: Tuning | null): void {
+  editorReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  editorId = tuning?.id ?? null;
+  // A new tuning starts from the one in use: most customs are a variation on
+  // whatever the player already had selected.
+  const source = tuning ?? tuningById(getState().tuningId);
+  editorName.value = tuning ? tuning.name : NAME_FALLBACK;
+  editorMidis = source.midis.slice(0, STRINGS_MAX).map(clampMidi);
+  while (editorMidis.length < STRINGS_MIN) {
+    editorMidis.push(editorMidis[editorMidis.length - 1] ?? MIDI_MIN);
+  }
+  disarmDelete();
+  editorDelete.hidden = editorId === null;
+  buildStringRows();
+  syncEditor();
+  setSheetMode('editor');
+  // The title, not the name field: focusing an input here would throw a
+  // software keyboard over the sheet before the player has asked for one.
+  sheetTitle.focus();
+}
+
+function backToList(target: HTMLElement | null): void {
+  disarmDelete();
+  setSheetMode('list');
+  // The row that opened the editor is gone after a delete, so fall back to the
+  // "New tuning" row that took its place at the end of the list.
+  const focus = target?.isConnected ? target : rowButtons[rowButtons.length - 1];
+  (focus ?? sheetClose).focus();
+  editorReturnFocus = null;
+}
+
+function saveEditor(): void {
+  const name = editorName.value.trim().slice(0, NAME_MAX) || NAME_FALLBACK;
+  const saved = saveCustomTuning({ id: editorId ?? undefined, name, midis: [...editorMidis] });
+  // Always setState, even when the id is unchanged: an edited tuning has to
+  // reach the views that are showing its note names.
+  setState({ tuningId: saved.id });
+  closeSheet();
+}
+
+function removeEditing(): void {
+  const id = editorId;
+  if (!id) return;
+  if (!deleteArmed) {
+    deleteArmed = true;
+    deleteTimer = window.setTimeout(disarmDelete, DELETE_ARM_MS);
+    editorDelete.classList.add('is-armed');
+    setText(editorDelete, 'Tap again to delete');
+    return;
+  }
+  disarmDelete();
+  const gone = tuningById(id).name;
+  const wasInUse = getState().tuningId === id;
+  deleteCustomTuning(id);
+  if (wasInUse) setState({ tuningId: 'standard' });
+  renderList();
+  const current = wasInUse
+    ? (rowButtons.find((item) => item.getAttribute('aria-current') === 'true') ?? null)
+    : null;
+  backToList(current ?? editorReturnFocus);
+  if (!current) return;
+  // Deleting the tuning in use retunes the instrument. The chip says so, but it
+  // is behind the scrim's blur, so the list says it too — and the row that took
+  // over comes into view under the focus ring instead of 500px down the list.
+  current.scrollIntoView({ block: 'center' });
+  setText(sheetNote, `${gone} deleted — now using ${tuningById(getState().tuningId).name}`);
+}
+
+editorForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  saveEditor();
 });
-tuningList.append(...tuningItems);
+editorCancel.addEventListener('click', () => backToList(editorReturnFocus));
+editorDelete.addEventListener('click', removeEditing);
+editorName.addEventListener('input', disarmDelete);
+attachRepeat(editorCountDec, () => setStringCount(editorMidis.length - 1));
+attachRepeat(editorCountInc, () => setStringCount(editorMidis.length + 1));
+
+/* ---------- sheet open / close ---------- */
 
 let sheetReturnFocus: HTMLElement | null = null;
 let sheetHideTimer = 0;
@@ -233,6 +648,10 @@ function openSheet(): void {
   if (sheetOpen) return;
   sheetOpen = true;
   closePopover();
+  // Customs can have changed since the last open, and a reopen that beat the
+  // exit animation may still be sitting in edit mode.
+  renderList();
+  setSheetMode('list');
   sheetReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   scrim.hidden = false;
   sheet.hidden = false;
@@ -243,8 +662,8 @@ function openSheet(): void {
     scrim.classList.add('is-open');
     sheet.classList.add('is-open');
   });
-  const current = tuningItems.find((item) => item.getAttribute('aria-current') === 'true');
-  (current ?? tuningItems[0]).focus();
+  const current = rowButtons.find((item) => item.getAttribute('aria-current') === 'true');
+  (current ?? rowButtons[0] ?? sheetClose).focus();
 }
 
 function closeSheet(): void {
@@ -261,34 +680,51 @@ function closeSheet(): void {
     if (sheetOpen) return;
     sheet.hidden = true;
     scrim.hidden = true;
+    disarmDelete();
+    setSheetMode('list');
   }, SHEET_EXIT_MS);
 }
 
+/** Everything tabbable in the sheet, in DOM order: the close button plus the
+    controls of whichever panel is showing. */
+function sheetFocusables(): HTMLElement[] {
+  const panel = sheetMode === 'editor' ? editorForm : tuningList;
+  const controls = panel.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])');
+  return [sheetClose, ...Array.from(controls).filter((node) => !node.hidden)];
+}
+
 function handleSheetKeys(e: KeyboardEvent): void {
-  const focusable = [sheetClose, ...tuningItems]; // DOM order inside the sheet
   const active = document.activeElement;
   if (e.key === 'Tab') {
     // The sheet is modal: keep Tab inside it.
+    const focusable = sheetFocusables();
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
-    if (e.shiftKey && active === first) {
+    const index = active instanceof HTMLElement ? focusable.indexOf(active) : -1;
+    // index < 0 covers the sheet title, which takes focus when the editor opens.
+    if (index < 0) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    } else if (e.shiftKey && index === 0) {
       e.preventDefault();
       last.focus();
-    } else if (!e.shiftKey && active === last) {
+    } else if (!e.shiftKey && index === focusable.length - 1) {
       e.preventDefault();
       first.focus();
     }
     return;
   }
+  if (sheetMode !== 'list') return; // arrows belong to the editor's own fields
   if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
   e.preventDefault();
-  const index = tuningItems.findIndex((item) => item === active);
-  const count = tuningItems.length;
+  const index = rowButtons.findIndex((item) => item === active);
+  const count = rowButtons.length;
+  if (count === 0) return;
   let next = 0;
   if (e.key === 'ArrowDown') next = index < 0 ? 0 : (index + 1) % count;
   else if (e.key === 'ArrowUp') next = index < 0 ? count - 1 : (index - 1 + count) % count;
   else if (e.key === 'End') next = count - 1;
-  tuningItems[next]?.focus();
+  rowButtons[next]?.focus();
 }
 
 tuningChip.addEventListener('click', openSheet);
@@ -376,9 +812,10 @@ function render(state: AppState): void {
   a4Inc.disabled = incOff;
   a4Reset.disabled = resetOff;
 
-  for (const item of tuningItems) {
-    const isCurrent = item.dataset.tuningId === state.tuningId;
-    if (isCurrent) item.setAttribute('aria-current', 'true');
+  for (const item of rowButtons) {
+    const id = item.dataset.tuningId;
+    if (id === undefined) continue; // the "New tuning" row
+    if (id === state.tuningId) item.setAttribute('aria-current', 'true');
     else item.removeAttribute('aria-current');
   }
 }
@@ -386,14 +823,23 @@ function render(state: AppState): void {
 render(getState());
 subscribe(render);
 
-/* ---------- metronome activity badge ---------- */
+/* ---------- activity badges ---------- */
 
-window.addEventListener('truestring:metronome-running', (event) => {
-  const detail = (event as CustomEvent<{ running?: boolean } | null>).detail;
-  const running = detail?.running === true;
-  tabs.metronome.classList.toggle('is-running', running);
-  metronomeStatus.textContent = running ? 'Metronome running' : '';
-});
+const runningNow = new Map<TabId, string>();
+
+for (const source of RUNNING_SOURCES) {
+  window.addEventListener(source.event, (event) => {
+    const detail = (event as CustomEvent<{ running?: boolean; note?: string } | null>).detail;
+    const running = detail?.running === true;
+    tabs[source.tab].classList.toggle('is-running', running);
+    // A view may name what it is playing, already spelled for speech ("A sharp
+    // 3"); a badge that says which tone is sounding beats one that says a tone is.
+    const note = typeof detail?.note === 'string' ? detail.note : '';
+    if (running) runningNow.set(source.tab, note ? `${source.label}, ${note}` : source.label);
+    else runningNow.delete(source.tab);
+    setText(runningStatus, [...runningNow.values()].join(', '));
+  });
+}
 
 /* ---------- boot ---------- */
 

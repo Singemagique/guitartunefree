@@ -1,6 +1,7 @@
 import './metronome-view.css';
 import { ensureRunning } from '../audio/context';
 import { Metronome, type Subdivision } from '../audio/metronome';
+import { holdWake, releaseWake } from '../wakelock';
 
 export interface ViewHandle {
   el: HTMLElement;
@@ -14,6 +15,14 @@ const BPB_MIN = 1;
 const BPB_MAX = 12;
 const DEFAULT_BPM = 120;
 const DEFAULT_BPB = 4;
+
+/** Practice ranges — the engine clamps to the same numbers. */
+const ADD_MIN = 1;
+const ADD_MAX = 20;
+const BARS_MIN = 1;
+const BARS_MAX = 16;
+const GAP_MIN = 1;
+const GAP_MAX = 8;
 
 const PREFS_KEY = 'truestring:metronome';
 
@@ -43,9 +52,18 @@ const ANGLE_EPSILON = 0.05;
 
 const REST_COUNT = '–';
 const TAP_HINT = 'Tap along with any song and the BPM follows.';
+/** While the trainer owns the tempo the plain hint is a lie — the climb moves
+    the BPM off any tapped number within a bar. What a tap does instead is set
+    the tempo the next climb starts from, so that is what it says. */
+const TAP_HINT_TRAINER = 'Tap to set the tempo the trainer climbs from.';
 /** The engine forgets a tap series after 2 s; the extra grace stops the caption
     swapping back while a slow tapper is still mid-phrase. */
 const TAP_REVERT_MS = 2500;
+
+/** A held stepper steps every 36 ms, and a polite region written at that rate is
+    a backlog rather than feedback. The announcement waits for the value to
+    settle instead. */
+const LIVE_SETTLE_MS = 450;
 
 /** Haptic beat: long enough to feel through a pocket, short enough not to buzz
     into the next beat even at 300 BPM (200 ms apart). */
@@ -108,13 +126,34 @@ const ICON_PENDULUM = `<svg ${SVG_ATTRS}>
   </g>
 </svg>`;
 const ICON_MUTED_TAG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 9.4h3.4L12 5.2v13.6L7.4 14.6H4z"/><path d="M16.4 9.8 21 14.4"/><path d="M21 9.8l-4.6 4.6"/></svg>`;
+/** A dashed line: the bar the click steps out of. Deliberately nothing like the
+    struck-through speaker of the user's own mute. */
+const ICON_GAP_TAG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M3.2 12h3.4"/><path d="M10.3 12h3.4"/><path d="M17.4 12h3.4"/></svg>`;
+
+interface TrainerPrefs {
+  on: boolean;
+  add: number;
+  bars: number;
+  target: number;
+}
+
+interface GapPrefs {
+  on: boolean;
+  play: number;
+  mute: number;
+}
 
 interface Prefs {
   muted: boolean;
   vibrate: boolean;
   /** null = no choice made yet, so the OS motion preference decides. */
   pendulum: boolean | null;
+  trainer: TrainerPrefs;
+  gap: GapPrefs;
 }
+
+const DEFAULT_TRAINER: TrainerPrefs = { on: false, add: 2, bars: 4, target: 160 };
+const DEFAULT_GAP: GapPrefs = { on: false, play: 2, mute: 2 };
 
 function tempoName(bpm: number): string {
   for (const mark of TEMPO_MARKS) {
@@ -127,34 +166,64 @@ function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
+function bagOf(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+}
+
+function readNumber(value: unknown, lo: number, hi: number, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? clamp(Math.round(value), lo, hi)
+    : fallback;
+}
+
 /** Storage can be absent (file://), full, or hold junk from an older build.
     Unknown keys — including v1.0's `screenFlash` — are simply not read, so the
-    next save drops them. */
+    next save drops them, and every number is re-clamped on the way in. */
 function loadPrefs(): Prefs {
+  const prefs: Prefs = {
+    muted: false,
+    vibrate: false,
+    pendulum: null,
+    trainer: { ...DEFAULT_TRAINER },
+    gap: { ...DEFAULT_GAP },
+  };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
-    if (raw) {
-      const parsed: unknown = JSON.parse(raw);
-      if (parsed !== null && typeof parsed === 'object') {
-        const bag = parsed as Record<string, unknown>;
-        return {
-          muted: bag.muted === true,
-          vibrate: bag.vibrate === true,
-          pendulum: typeof bag.pendulum === 'boolean' ? bag.pendulum : null,
-        };
-      }
-    }
+    if (!raw) return prefs;
+    const bag = bagOf(JSON.parse(raw) as unknown);
+    prefs.muted = bag.muted === true;
+    prefs.vibrate = bag.vibrate === true;
+    prefs.pendulum = typeof bag.pendulum === 'boolean' ? bag.pendulum : null;
+    const trainer = bagOf(bag.trainer);
+    prefs.trainer = {
+      on: trainer.on === true,
+      add: readNumber(trainer.add, ADD_MIN, ADD_MAX, DEFAULT_TRAINER.add),
+      bars: readNumber(trainer.bars, BARS_MIN, BARS_MAX, DEFAULT_TRAINER.bars),
+      target: readNumber(trainer.target, BPM_MIN, BPM_MAX, DEFAULT_TRAINER.target),
+    };
+    const gap = bagOf(bag.gap);
+    prefs.gap = {
+      on: gap.on === true,
+      play: readNumber(gap.play, GAP_MIN, GAP_MAX, DEFAULT_GAP.play),
+      mute: readNumber(gap.mute, GAP_MIN, GAP_MAX, DEFAULT_GAP.mute),
+    };
   } catch {
-    /* unreadable or unparseable — fall through to defaults */
+    /* unreadable or unparseable — the defaults above stand */
   }
-  return { muted: false, vibrate: false, pendulum: null };
+  return prefs;
 }
 
 function savePrefs(prefs: Prefs): void {
   try {
     localStorage.setItem(
       PREFS_KEY,
-      JSON.stringify({ muted: prefs.muted, vibrate: prefs.vibrate, pendulum: prefs.pendulum }),
+      JSON.stringify({
+        muted: prefs.muted,
+        vibrate: prefs.vibrate,
+        pendulum: prefs.pendulum,
+        trainer: prefs.trainer,
+        gap: prefs.gap,
+      }),
     );
   } catch {
     /* private mode or quota — the toggles still work for this session */
@@ -192,6 +261,32 @@ function pendulumSvg(): string {
     </svg>`;
 }
 
+/** One practice stepper: −, value, +. `name` prefixes the three class hooks. */
+function miniStepper(name: string, group: string, down: string, up: string): string {
+  return `<span class="nv-mini" role="group" aria-label="${group}">
+        <button class="icon-btn nv-mini-btn nv-${name}-down" type="button" aria-label="${down}"><span aria-hidden="true">&minus;</span></button>
+        <span class="nv-mini-value nv-${name}-value"></span>
+        <button class="icon-btn nv-mini-btn nv-${name}-up" type="button" aria-label="${up}"><span aria-hidden="true">+</span></button>
+      </span>`;
+}
+
+/**
+ * A debounced writer for one polite live region: the sentence lands once, after
+ * the value has stopped moving. The equality guard matters as much as the
+ * timer — assigning the identical string still replaces the text node, and a
+ * screen reader announces that, so a stepper held past its clamp would keep
+ * talking about a number that has stopped changing.
+ */
+function liveWriter(node: HTMLElement): (text: string) => void {
+  let timer = 0;
+  return (text: string): void => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      if (node.textContent !== text) node.textContent = text;
+    }, LIVE_SETTLE_MS);
+  };
+}
+
 /**
  * Fires `step` on press and then repeats while held, tightening the interval so
  * a long hold sweeps quickly. Keyboard activation holds too (Enter/Space), so
@@ -219,7 +314,11 @@ function attachRepeat(btn: HTMLButtonElement, step: () => void): void {
 
   btn.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
-    btn.setPointerCapture(e.pointerId);
+    try {
+      btn.setPointerCapture(e.pointerId);
+    } catch {
+      /* a synthetic event has no active pointer to capture */
+    }
     begin();
   });
   btn.addEventListener('pointerup', end);
@@ -253,8 +352,16 @@ export function createMetronomeView(): ViewHandle {
   let rafId = 0;
   let writtenAngle = Number.NaN;
   let tapRevert = 0;
+  let saveTimer = 0;
   let scroller: HTMLElement | null = null;
   let scrollTop = 0;
+  /** The tempo a trainer run climbs from: taken when the trainer is switched on
+      and re-taken on every hand edit while it is on. Without it a run that ends
+      on the target leaves the tempo parked there, and every later start is a
+      switch that looks armed and does nothing. */
+  let trainerBase = DEFAULT_BPM;
+  /** Arrival is announced once per climb, not once per repaint. */
+  let saidAtTarget = false;
 
   const el = document.createElement('section');
   el.className = 'nv';
@@ -269,7 +376,10 @@ export function createMetronomeView(): ViewHandle {
         </div>
         <button class="icon-btn nv-step nv-bpm-up" type="button" aria-label="Increase tempo"><span aria-hidden="true">+</span></button>
       </div>
-      <p class="nv-tempo-name">${tempoName(DEFAULT_BPM)}</p>
+      <div class="nv-tempo-line">
+        <p class="nv-tempo-name">${tempoName(DEFAULT_BPM)}</p>
+        <span class="nv-target" hidden></span>
+      </div>
       <input class="nv-slider" type="range" min="${BPM_MIN}" max="${BPM_MAX}" step="1" value="${DEFAULT_BPM}" aria-label="Tempo in beats per minute">
       <button class="btn btn-ghost nv-tap" type="button" aria-describedby="nv-tap-hint">Tap the beat</button>
       <p class="nv-tap-hint" id="nv-tap-hint">${TAP_HINT}</p>
@@ -288,6 +398,7 @@ export function createMetronomeView(): ViewHandle {
           <span class="nv-count" aria-hidden="true">${REST_COUNT}</span>
           <span class="nv-stage-bpm" aria-hidden="true">${DEFAULT_BPM} BPM</span>
           <span class="nv-muted-tag" hidden>${ICON_MUTED_TAG}Click muted</span>
+          <span class="nv-gap-tag">${ICON_GAP_TAG}Count it</span>
         </div>
         <div class="nv-tools">
           <button class="icon-btn nv-tool nv-big" type="button" aria-pressed="false" aria-label="Big view">${ICON_EXPAND}</button>
@@ -325,6 +436,38 @@ export function createMetronomeView(): ViewHandle {
           ).join('')}
         </div>
       </div>
+    </div>
+
+    <div class="card nv-panel nv-practice">
+      <div class="nv-prac">
+        <button class="nv-prac-head nv-trainer-btn" type="button" aria-pressed="false">
+          <span class="nv-row-label">Speed trainer</span>
+          <span class="nv-prac-sum nv-trainer-sum" aria-hidden="true"></span>
+          <span class="nv-switch" aria-hidden="true"></span>
+        </button>
+        <p class="sr-only nv-trainer-live" aria-live="polite"></p>
+        <div class="nv-prac-cfg nv-trainer-cfg" hidden>
+          ${miniStepper('add', 'Tempo added each step', 'Smaller tempo step', 'Bigger tempo step')}
+          <span class="nv-prac-word">BPM every</span>
+          ${miniStepper('bars', 'Bars between steps', 'Fewer bars between steps', 'More bars between steps')}
+          <span class="nv-prac-word">bars, up to</span>
+          ${miniStepper('target', 'Target tempo', 'Lower target tempo', 'Higher target tempo')}
+        </div>
+      </div>
+      <div class="nv-prac">
+        <button class="nv-prac-head nv-gap-btn" type="button" aria-pressed="false">
+          <span class="nv-row-label">Gap training</span>
+          <span class="nv-prac-sum nv-gap-sum" aria-hidden="true"></span>
+          <span class="nv-switch" aria-hidden="true"></span>
+        </button>
+        <p class="sr-only nv-gap-live" aria-live="polite"></p>
+        <div class="nv-prac-cfg nv-gap-cfg" hidden>
+          ${miniStepper('play', 'Bars with the click', 'Fewer sounding bars', 'More sounding bars')}
+          <span class="nv-prac-word">bars on /</span>
+          ${miniStepper('rest', 'Bars of silence', 'Fewer silent bars', 'More silent bars')}
+          <span class="nv-prac-word">off</span>
+        </div>
+      </div>
     </div>`;
 
   const bpmValue = el.querySelector('.nv-bpm-value') as HTMLElement;
@@ -347,6 +490,22 @@ export function createMetronomeView(): ViewHandle {
   const stageTransport = el.querySelector('.nv-stage-transport') as HTMLButtonElement;
   const bpbValue = el.querySelector('.nv-bpb-value') as HTMLElement;
   const subBtns = Array.from(el.querySelectorAll<HTMLButtonElement>('.nv-sub'));
+  const targetChip = el.querySelector('.nv-target') as HTMLElement;
+  const trainerBtn = el.querySelector('.nv-trainer-btn') as HTMLButtonElement;
+  const trainerSum = el.querySelector('.nv-trainer-sum') as HTMLElement;
+  const trainerLive = el.querySelector('.nv-trainer-live') as HTMLElement;
+  const trainerCfg = el.querySelector('.nv-trainer-cfg') as HTMLElement;
+  const addValue = el.querySelector('.nv-add-value') as HTMLElement;
+  const barsValue = el.querySelector('.nv-bars-value') as HTMLElement;
+  const targetValue = el.querySelector('.nv-target-value') as HTMLElement;
+  const gapBtn = el.querySelector('.nv-gap-btn') as HTMLButtonElement;
+  const gapSum = el.querySelector('.nv-gap-sum') as HTMLElement;
+  const gapLive = el.querySelector('.nv-gap-live') as HTMLElement;
+  const gapCfg = el.querySelector('.nv-gap-cfg') as HTMLElement;
+  const playValue = el.querySelector('.nv-play-value') as HTMLElement;
+  const restValue = el.querySelector('.nv-rest-value') as HTMLElement;
+  const sayTrainer = liveWriter(trainerLive);
+  const sayGap = liveWriter(gapLive);
   let dots: HTMLElement[] = [];
 
   function renderBpm(): void {
@@ -355,11 +514,37 @@ export function createMetronomeView(): ViewHandle {
     stageBpm.textContent = `${bpm} BPM`;
     slider.value = String(bpm);
     slider.style.setProperty('--nv-fill', `${((bpm - BPM_MIN) / (BPM_MAX - BPM_MIN)) * 100}%`);
+    renderTarget();
+  }
+
+  /** Where the climb ends, and whether it still has anywhere to go. Derived from
+      the tempo rather than latched, so raising the target while the ramp is
+      parked on it puts the chip straight back into its climbing state. The swap
+      happens on the bar the target is reached — never on a beat. */
+  function renderTarget(): void {
+    const t = prefs.trainer;
+    const arrived = t.on && bpm >= t.target;
+    const text = arrived ? `at ${t.target}` : `up to ${t.target}`;
+    if (targetChip.textContent !== text) targetChip.textContent = text;
+    targetChip.classList.toggle('is-at', arrived);
+    targetChip.hidden = !t.on;
+    if (!arrived) {
+      saidAtTarget = false;
+      return;
+    }
+    if (saidAtTarget) return;
+    saidAtTarget = true;
+    // A chip is silent to a screen reader; the end of the climb is the one
+    // moment of the exercise that has to be spoken.
+    if (metro.running) sayTrainer(`Speed trainer at ${t.target} BPM, climb finished`);
   }
 
   function setBpm(next: number, fromTap = false): void {
     bpm = clamp(Math.round(next), BPM_MIN, BPM_MAX);
     metro.bpm = bpm;
+    // A hand-set tempo is where the next climb starts from, dragged or tapped:
+    // the trainer follows the musician instead of overwriting them.
+    if (prefs.trainer.on) trainerBase = bpm;
     renderBpm();
     // A slider or stepper edit makes any "Set to N BPM" caption a lie.
     if (!fromTap) revertTap();
@@ -398,6 +583,95 @@ export function createMetronomeView(): ViewHandle {
       const on = i + 1 === next;
       b.classList.toggle('is-active', on);
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+
+  /* ---------- practice ---------- */
+
+  /** A held stepper steps every 36 ms at full tilt and localStorage is
+      synchronous on the thread the scheduler and the rAF loop share, so the
+      write waits for the hold to end. The engine already has the new config. */
+  function queueSave(): void {
+    window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => savePrefs(prefs), 350);
+  }
+
+  /** Pushes the whole config at the engine, which reads it fresh on each
+      downbeat — so an edit mid-run lands on the next bar without a restart. */
+  function renderTrainer(): void {
+    const t = prefs.trainer;
+    addValue.textContent = `+${t.add}`;
+    barsValue.textContent = String(t.bars);
+    targetValue.textContent = String(t.target);
+    trainerSum.textContent = `+${t.add} BPM / ${t.bars} bars → ${t.target}`;
+    trainerSum.hidden = t.on;
+    trainerBtn.setAttribute('aria-pressed', t.on ? 'true' : 'false');
+    trainerCfg.hidden = !t.on;
+    // "the BPM follows" stops being true the moment something else is driving
+    // the tempo, so the button under it says what a tap does instead.
+    tapHint.textContent = t.on ? TAP_HINT_TRAINER : TAP_HINT;
+    renderTarget();
+    metro.trainer = t.on ? { add: t.add, bars: t.bars, target: t.target } : null;
+  }
+
+  function renderGap(): void {
+    const g = prefs.gap;
+    playValue.textContent = String(g.play);
+    restValue.textContent = String(g.mute);
+    gapSum.textContent = `${g.play} bars on / ${g.mute} off`;
+    gapSum.hidden = g.on;
+    gapBtn.setAttribute('aria-pressed', g.on ? 'true' : 'false');
+    gapCfg.hidden = !g.on;
+    metro.gap = g.on ? { play: g.play, mute: g.mute } : null;
+    // Switched off inside a silent bar, the stage would otherwise hold the
+    // muted-bar treatment until the next beat repainted it.
+    if (!g.on) stage.classList.remove('is-gap');
+  }
+
+  function editTrainer(patch: Partial<TrainerPrefs>): void {
+    const t = prefs.trainer;
+    const wasOn = t.on;
+    const next = { ...t, ...patch };
+    t.on = next.on;
+    t.add = clamp(next.add, ADD_MIN, ADD_MAX);
+    t.bars = clamp(next.bars, BARS_MIN, BARS_MAX);
+    t.target = clamp(next.target, BPM_MIN, BPM_MAX);
+    // Switching it on marks where the first climb starts.
+    if (t.on && !wasOn) trainerBase = bpm;
+    renderTrainer();
+    // The values live in a sentence of small steppers with no big readout
+    // mirroring them, so the change is spoken as one — once it has settled.
+    sayTrainer(
+      t.on
+        ? `Speed trainer on, ${t.add} BPM every ${t.bars} bars, up to ${t.target} BPM`
+        : 'Speed trainer off',
+    );
+    queueSave();
+  }
+
+  function editGap(patch: Partial<GapPrefs>): void {
+    const g = prefs.gap;
+    const next = { ...g, ...patch };
+    g.on = next.on;
+    g.play = clamp(next.play, GAP_MIN, GAP_MAX);
+    g.mute = clamp(next.mute, GAP_MIN, GAP_MAX);
+    renderGap();
+    sayGap(
+      g.on
+        ? `Gap training on, ${g.play} bars with the click, ${g.mute} silent`
+        : 'Gap training off',
+    );
+    queueSave();
+  }
+
+  /** Unfolding a row's steppers can drop them under the tab bar, and a switch
+      that appears to do nothing reads as a broken switch. `nearest` moves the
+      view the least it can — nothing at all when the row is already clear — and
+      the row's scroll-margin keeps it off the shell's bottom fade. */
+  function reveal(row: Element | null): void {
+    row?.scrollIntoView({
+      block: 'nearest',
+      behavior: REDUCE_MOTION.matches ? 'auto' : 'smooth',
     });
   }
 
@@ -461,6 +735,11 @@ export function createMetronomeView(): ViewHandle {
   function syncTransport(): void {
     const running = metro.running;
     const label = running ? 'Stop metronome' : 'Start metronome';
+    // Held while the engine runs, hidden view included — the click keeps time
+    // for a musician who is looking at their hands, not at the screen. Every
+    // stop path lands here, including a start that never got its audio.
+    if (running) holdWake('metronome');
+    else releaseWake('metronome');
     for (const btn of [transport, stageTransport]) {
       btn.classList.toggle('is-running', running);
       btn.setAttribute('aria-pressed', running ? 'true' : 'false');
@@ -474,6 +753,7 @@ export function createMetronomeView(): ViewHandle {
       settle();
       countEl.classList.remove('is-accent');
       countEl.textContent = REST_COUNT;
+      stage.classList.remove('is-gap');
     }
     if (running === wasRunning) return;
     wasRunning = running;
@@ -490,6 +770,10 @@ export function createMetronomeView(): ViewHandle {
     }
     if (starting) return;
     starting = true;
+    // Every run climbs. Without this the tempo is left wherever the last run
+    // parked it — on the target, where the trainer has nothing left to do — and
+    // pressing start again is a silent no-op under a switch that reads as on.
+    if (prefs.trainer.on) setBpm(trainerBase);
     ensureRunning()
       .then(() => metro.start())
       .catch(() => undefined)
@@ -567,21 +851,56 @@ export function createMetronomeView(): ViewHandle {
       // if this view is still the one on screen.
       if (visible && scroller) scroller.scrollTop = scrollTop;
       scroller = null;
-      // Only reclaim focus if it was still inside the stage that just closed —
-      // never when the whole view is being torn off screen by a tab switch.
-      if (restoreFocus && stage.contains(document.activeElement)) bigBtn.focus();
+      // Unconditional: closing the overlay by hand always hands focus back to
+      // the button that opened it, wherever it had wandered. Only the tab-switch
+      // teardown passes restoreFocus false, and it is the one path that must not
+      // pull focus into a view being taken off screen.
+      if (restoreFocus) bigBtn.focus();
     }
   }
 
-  function onBigKey(e: KeyboardEvent): void {
-    if (e.key !== 'Escape') return;
-    e.preventDefault();
-    setBig(false);
+  /** The stage's own controls in DOM order — the rail, then the transport. The
+      vibrate toggle is not built everywhere and the stage transport only shows
+      in big view, so the list is read live rather than cached. */
+  function stageFocusables(): HTMLElement[] {
+    return Array.from(stage.querySelectorAll<HTMLElement>('button')).filter(
+      (b) => !(b as HTMLButtonElement).disabled && b.getClientRects().length > 0,
+    );
   }
 
-  metro.onBeat = (beatInBar: number, isAccent: boolean): void => {
+  /**
+   * Big view declares itself a modal, so it has to hold Tab. Everything outside
+   * is inert, but without a wrap the cycle still steps off the last control onto
+   * <body> — no focus ring, nothing to read, and an Escape from there with
+   * nowhere to put focus back.
+   */
+  function onBigKey(e: KeyboardEvent): void {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      setBig(false);
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const items = stageFocusables();
+    if (items.length === 0) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    // Focus outside the stage is the recovery case — a Tab from anywhere else
+    // comes straight back in rather than walking an inert document.
+    const leaving = e.shiftKey ? first : last;
+    if (document.activeElement === leaving || !stage.contains(document.activeElement)) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    }
+  }
+
+  metro.onBeat = (beatInBar: number, isAccent: boolean, muted: boolean): void => {
     countEl.textContent = String(beatInBar + 1);
     countEl.classList.toggle('is-accent', isAccent);
+    // A gap bar is a state, not an event: the counter switches to its outline
+    // and holds there for the whole bar. Distinct from the user's own mute,
+    // which keeps its own tag and its solid numeral.
+    stage.classList.toggle('is-gap', muted);
     // Position, not pulse: exactly one dot is filled and the fill steps along.
     for (let i = 0; i < dots.length; i++) {
       dots[i].classList.toggle('is-current', i === beatInBar);
@@ -589,9 +908,21 @@ export function createMetronomeView(): ViewHandle {
     // The stage is display:none while another tab is up; the tick would only
     // queue and fire on return.
     if (visible) replay(countEl, 'is-tick');
-    if (HAS_VIBRATE && prefs.vibrate) {
+    // The haptic stands in for the click, so a gap bar drops it too — a buzz
+    // through the bar you are supposed to keep on your own is no gap at all.
+    if (HAS_VIBRATE && prefs.vibrate && !muted) {
       navigator.vibrate(isAccent ? VIBE_ACCENT_MS : VIBE_BEAT_MS);
     }
+  };
+
+  // The trainer moves the tempo itself: follow it in the readout, on the slider
+  // and in the target chip. The tap caption goes with it — "Set to 100 BPM"
+  // standing under a readout that now says 130 is one of the two numbers being
+  // a lie. Note the base is untouched: a bump is the climb, not a new start.
+  metro.onTempoChange = (next: number): void => {
+    bpm = clamp(Math.round(next), BPM_MIN, BPM_MAX);
+    renderBpm();
+    revertTap();
   };
 
   attachRepeat(el.querySelector('.nv-bpm-down') as HTMLButtonElement, () => setBpm(bpm - 1));
@@ -602,6 +933,30 @@ export function createMetronomeView(): ViewHandle {
   attachRepeat(el.querySelector('.nv-bpb-up') as HTMLButtonElement, () =>
     setBeatsPerBar(beatsPerBar + 1),
   );
+
+  const repeat = (sel: string, step: () => void): void =>
+    attachRepeat(el.querySelector(sel) as HTMLButtonElement, step);
+
+  repeat('.nv-add-down', () => editTrainer({ add: prefs.trainer.add - 1 }));
+  repeat('.nv-add-up', () => editTrainer({ add: prefs.trainer.add + 1 }));
+  repeat('.nv-bars-down', () => editTrainer({ bars: prefs.trainer.bars - 1 }));
+  repeat('.nv-bars-up', () => editTrainer({ bars: prefs.trainer.bars + 1 }));
+  repeat('.nv-target-down', () => editTrainer({ target: prefs.trainer.target - 1 }));
+  repeat('.nv-target-up', () => editTrainer({ target: prefs.trainer.target + 1 }));
+  repeat('.nv-play-down', () => editGap({ play: prefs.gap.play - 1 }));
+  repeat('.nv-play-up', () => editGap({ play: prefs.gap.play + 1 }));
+  repeat('.nv-rest-down', () => editGap({ mute: prefs.gap.mute - 1 }));
+  repeat('.nv-rest-up', () => editGap({ mute: prefs.gap.mute + 1 }));
+
+  trainerBtn.addEventListener('click', () => {
+    editTrainer({ on: !prefs.trainer.on });
+    if (prefs.trainer.on) reveal(trainerBtn.closest('.nv-prac'));
+  });
+
+  gapBtn.addEventListener('click', () => {
+    editGap({ on: !prefs.gap.on });
+    if (prefs.gap.on) reveal(gapBtn.closest('.nv-prac'));
+  });
 
   slider.addEventListener('input', () => setBpm(Number(slider.value)));
 
@@ -658,6 +1013,8 @@ export function createMetronomeView(): ViewHandle {
   syncMute();
   syncVibe();
   syncPendulum();
+  renderTrainer();
+  renderGap();
 
   // The metronome deliberately keeps running while its view is hidden; only the
   // rAF loop that draws it stops, since nothing it writes to would be visible.

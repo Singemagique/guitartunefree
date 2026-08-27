@@ -231,3 +231,78 @@ Placed directly under the transport button — the thing you look at while playi
 - Button label becomes **"Tap the beat"**, with a caption under it (`.nv-tap-hint`, linked via `aria-describedby`): *"Tap along with any song and the BPM follows."*
 - Live feedback replaces the caption while tapping: after the first tap "Keep tapping…", from the second tap "Set to 132 BPM" (updates on every tap); reverts to the explanation 2.5 s after the last tap (matches the engine's 2 s tap window plus a grace).
 - The button still flashes on each tap; Space/Enter work as taps.
+
+
+## v1.2 — Practice tools (wake lock, speed trainer, instruments + custom tunings, drone, gap training)
+
+### src/wakelock.ts (new)
+```ts
+export type WakeReason = 'tuner' | 'metronome' | 'drone' | 'manual-loop';
+export function holdWake(reason: WakeReason): void;
+export function releaseWake(reason: WakeReason): void;
+```
+Ref-counted screen wake lock: an internal Set of reasons; first hold requests `navigator.wakeLock.request('screen')`, last release frees it. Re-acquires on `visibilitychange` back to visible while any reason is held (locks auto-release when hidden). Every promise failure is swallowed — unsupported browsers must behave exactly as before. Callers: tuner view holds 'tuner' while the mic runs; metronome view holds 'metronome' while running (also when hidden — the engine keeps ticking); manual view holds 'drone' while the drone sounds and 'manual-loop' while Loop is on.
+
+### Pitch floor drops to 28 Hz (bass support)
+- src/audio/pitch.ts: MIN_FREQ 55 -> 28 (5-string bass low B = 30.87 Hz). Ceiling stays 1100 Hz.
+- src/audio/mic.ts: frame sizing formula covers lags down to 28 Hz (2.5 * sr / 28, next power of two, still clamped to 32768) — 4096 at 44.1/48 kHz.
+
+### src/audio/drone.ts (new)
+```ts
+export class Drone {
+  get running(): boolean;
+  get midi(): number | null;
+  start(midi: number, a4?: number): void;    // ensureRunning() inside; 250 ms fade-in
+  setPitch(midi: number, a4?: number): void; // retune live without restarting
+  stop(): void;                              // 250 ms fade-out, then nodes disconnected
+}
+```
+Sound: a warm sustained reference — two slightly-detuned triangle/sawtooth oscillators (about +-3 cents) plus a sub octave at low gain, through a gentle lowpass (~1.8 kHz), a very slow LFO (~0.3 Hz) modulating detune a few cents, master gain ~0.18. Continuous, no rhythm; no clicks or zipper noise on retune (ramp frequency over ~60 ms).
+
+### Metronome engine additions (src/audio/metronome.ts)
+```ts
+export interface TrainerConfig { add: number; bars: number; target: number } // clamps: add 1-20, bars 1-16, target 30-300
+export interface GapConfig { play: number; mute: number }                    // clamps: 1-8 each
+export interface BeatClock { /* existing fields */ muted: boolean }          // NEW: true when that beat belongs to a muted bar
+class Metronome {
+  trainer: TrainerConfig | null; // read fresh each downbeat; when barsSinceBump >= bars and bpm < target: bpm = min(bpm+add, target)
+  gap: GapConfig | null;         // bar cycle play+mute; during mute bars every click (beats and subdivision ticks) is skipped, but onBeat, beatClock and the grid continue
+  onTempoChange: ((bpm: number) => void) | null; // fired latency-aligned (like onBeat) when the trainer bumps the tempo
+  onBeat: ((beatInBar: number, isAccent: boolean, muted: boolean) => void) | null; // third arg NEW
+}
+```
+Trainer and gap bar counters reset in start() and count per scheduled downbeat. Setting trainer/gap to null mid-run cleanly stops the behaviour; live edits of their fields apply from the next downbeat. The two compose (a muted bar still counts toward the trainer).
+
+### Tunings become grouped + custom (src/music/tunings.ts)
+```ts
+export type TuningGroup = 'Guitar' | 'Bass' | 'Ukulele' | 'Mandolin' | 'Custom';
+export interface Tuning { id: string; name: string; detail: string; midis: readonly number[]; group: TuningGroup } // group NEW; midis length 4-8, order = string position low-string-first (ukulele's reentrant G4 stays first)
+export const TUNINGS: readonly Tuning[]; // the existing 10 guitar presets (group 'Guitar'), then:
+//  Bass Standard  [28,33,38,43]  E1 A1 D2 G2      | Bass 5-string [23,28,33,38,43]  B0 E1 A1 D2 G2
+//  Ukulele gCEA   [67,60,64,69]  G4 C4 E4 A4      | Mandolin GDAE [55,62,69,76]     G3 D4 A4 E5
+export function allTunings(): Tuning[];             // TUNINGS + customs from storage
+export function tuningById(id: string): Tuning;     // searches customs too; falls back to standard
+export function customTunings(): Tuning[];          // from localStorage 'truestring:custom-tunings' (tolerant parse)
+export function saveCustomTuning(t: { id?: string; name: string; midis: number[] }): Tuning; // id generated when absent; midis clamped to 23-81, length 4-8; detail derived from note names; group 'Custom'
+export function deleteCustomTuning(id: string): void;
+export function noteName(midi: number): string;     // "E2" etc (uses music/notes)
+```
+Selecting a since-deleted custom tuning falls back to standard on next load. tuningNotes() unchanged (length-agnostic).
+
+### Tuning sheet (src/main.ts + src/style.css)
+- The sheet groups entries under small section headers (Guitar, Bass, Ukulele, Mandolin, Custom — a section renders only when non-empty).
+- The Custom section ends with a "+ New tuning" row opening the **tuning editor** (same sheet swapped into edit mode or a second sheet): name field (maxlength 24, default "My tuning"), string-count stepper 4-8 (adding copies the last string, removing drops the highest), one row per string showing its note name with -/+ semitone steppers (midi 23-81), a live detail preview, Save / Cancel, and Delete when editing an existing custom (customs get a small edit affordance in their row). Escape/scrim behave like the existing sheet; focus is managed the same way. Saving selects the tuning. All storage through the tunings.ts API — main.ts touches no localStorage keys itself.
+- Editing the currently-selected custom re-notifies state (setState with the same id is fine) so views relabel.
+
+### Views
+- **Tuner + Manual must be string-count-agnostic (4-8).** The tuner's pill strip and nearest-string targeting already iterate tuningNotes() — verify and fix any hardcoded 6. The manual headstock lays out N buttons in two columns (left = first ceil(N/2) strings bottom-to-top, right = the rest top-to-bottom, matching a headstock seen from the front); the decorative SVG stays.
+- **Drone card (manual view, under the headstock):** pitch-class picker (12 chips, sharps) + octave stepper (octave 2-5), default A3; big play/stop toggle (aria-pressed, accessible name "Drone"). Uses Drone from audio/drone; retunes live when pitch changes while running; A4 calibration applies (subscribe to state). Keeps sounding across tab switches (stopped only by its own toggle); dispatches CustomEvent 'truestring:drone-running' on window with detail { running }; main.ts shows the running-dot on the *Manual* tab for it (generalize the badge handling that currently serves the metronome tab). Holds/releases the 'drone' wake reason.
+- **Metronome view — Practice card** (a third card after settings) with two compact rows:
+  - "Speed trainer" toggle + inline config "+{add} BPM every {bars} bars up to {target}" via three small steppers (press-and-hold repeat like the others). While running with trainer on, the BPM readout and slider follow each bump via onTempoChange; a subtle static chip shows the target while enabled.
+  - "Gap training" toggle + "{play} on / {mute} off" bar steppers. During muted bars the stage shows a static muted-bar treatment: e.g. the beat counter renders hollow/outlined via a stage class (instant state change — NO luminance flash), and the user-mute "CLICK MUTED" tag is NOT reused for it. Marker dots and pendulum continue.
+  - Both persist inside the existing 'truestring:metronome' prefs blob (e.g. trainer: {on,add,bars,target}, gap: {on,play,mute}; tolerant load, unknown keys dropped).
+- Wake lock wiring per the wakelock section (tuner mic, metronome running, drone, manual loop).
+
+### Quality bar (unchanged, plus)
+- No flashing, anywhere — every new indicator is a static state change or continuous motion.
+- npm run build clean; layouts verified at 375x812, 375x667, 320x640, 812x375, 1280x800; keyboard operable; aria-pressed on all toggles; 44 px targets; AA contrast.

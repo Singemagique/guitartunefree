@@ -6,16 +6,18 @@
    filled marker dot). Nothing in this file animates opacity, background,
    box-shadow, text-shadow, filter or colour on a per-beat basis. The single
    keyframe that touches colour, `nv-tap-ack`, fires once per user tap on the tap
-   tempo button — never on a beat. */
+   tempo button — never on a beat. Gap training's silent bars are a bar-level
+   state — an outlined counter and a static tag, swapped instantly and held for
+   whole bars — not a per-beat one, and the practice card animates nothing. */
 
 .nv {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 9px;
 }
 
 .nv-panel {
-  padding: 14px 14px 12px;
+  padding: 11px 14px 8px;
 }
 
 /* --- tempo readout ------------------------------------------------------- */
@@ -34,7 +36,7 @@
 }
 
 .nv-bpm-value {
-  font-size: 60px;
+  font-size: 52px;
   font-weight: 700;
   letter-spacing: -0.035em;
   font-variant-numeric: tabular-nums;
@@ -55,14 +57,54 @@
   color: var(--muted);
 }
 
+/* The tempo mark keeps the centre line whether or not the trainer's target is
+   showing, so the chip is taken out of flow and pinned to the right edge. */
+.nv-tempo-line {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 2px 0 3px;
+}
+
 .nv-tempo-name {
-  margin: 3px 0 4px;
   text-align: center;
   font-size: 13px;
   font-style: italic;
   letter-spacing: 0.03em;
   color: var(--amber);
   opacity: 0.85;
+}
+
+/* Where the speed trainer is climbing to — and, once it gets there, that it
+   has. A label, not an indicator: it is written once when the target changes
+   and once more when the ramp arrives, and it never animates. */
+.nv-target {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  padding: 1px 7px;
+  border: 1px solid var(--amber-line);
+  border-radius: 999px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transform: translateY(-50%);
+}
+
+/* Arrived. The ramp is over until the transport is started again, so the chip
+   stops describing a climb and states where the tempo is. One swap, on the bar
+   the target is reached — never on a beat. */
+.nv-target.is-at {
+  border-color: var(--amber);
+  background: var(--amber);
+  color: var(--ink);
 }
 
 .nv-step {
@@ -78,6 +120,10 @@
 .nv-slider {
   --nv-fill: 33%;
 
+  /* Block, not the input's default inline-block: an inline range sits on the
+     text baseline and drags ~7px of strut descender along under it, which is
+     dead space this column cannot spare. */
+  display: block;
   width: 100%;
   height: 44px;
   margin: 0;
@@ -165,7 +211,7 @@
 
 /* Explains what the button is for; swapped for live feedback while tapping. */
 .nv-tap-hint {
-  margin: 7px 2px 0;
+  margin: 5px 2px 0;
   min-height: 17px;
   text-align: center;
   font-size: 12.5px;
@@ -175,7 +221,7 @@
 }
 
 .nv-tap-live {
-  margin: 7px 2px 0;
+  margin: 5px 2px 0;
   min-height: 17px;
   text-align: center;
   font-size: 12.5px;
@@ -187,12 +233,17 @@
 /* --- beat stage ---------------------------------------------------------- */
 
 .nv-stage {
-  /* Width kept clear on the right for the tool rail, so nothing the pendulum
-     draws can ever reach the toggles. */
-  --nv-rail: 52px;
+  /* The block the tool rail occupies in the top-right corner: two 44px columns
+     and the gap between them. The drawing is centred on the card, not on the
+     space this leaves, so the rail is a clearance the swing has to respect
+     rather than a margin the whole composition is pushed out of. */
+  --nv-rail: 90px;
 
   position: relative;
-  height: 190px;
+  /* Down from v1.1's 190px to seat the practice card without pushing the stage
+     off a 375x812 screen. The floor is now the rail's own 90px plus the
+     padding — two 44px columns, not four stacked buttons. */
+  height: 162px;
   padding: 8px 10px;
   overflow: hidden;
 }
@@ -201,13 +252,22 @@
 
 /* The box is what gets positioned; the <svg> fills it. An absolutely
    positioned <svg> would otherwise take its intrinsic size over the insets and
-   clip the pivot, so its width/height are always spelled out. */
+   clip the pivot, so its width/height are always spelled out.
+
+   Both insets are equal and the auto margins split whatever max-width leaves,
+   so the pivot lands on the same axis as the numeral, the slider and the
+   transport above it. The swing only inks the middle ~46% of the 300-unit
+   viewBox, so the box is allowed to run that much wider than the strip beside
+   the rail — which is what keeps the drawing full height on a phone while the
+   arm still never reaches the toggles. */
 .nv-pend-box {
   position: absolute;
   top: 4px;
-  right: var(--nv-rail);
+  right: 10px;
   bottom: 26px;
-  left: 8px;
+  left: 10px;
+  max-width: calc((100% - 20px - 2 * var(--nv-rail)) / 0.46);
+  margin-inline: auto;
   z-index: 1;
   pointer-events: none;
 }
@@ -321,6 +381,27 @@
   opacity: 0.7;
 }
 
+/* Gap training: the counter goes hollow for the whole silent bar and solid
+   again on the next sounding one. A state that holds for bars at a time, swapped
+   instantly — no fade, no pulse, and no change in overall screen luminance
+   beyond the numeral's own outline. Guarded, because a browser without text
+   stroking would otherwise be left with an invisible counter. */
+@supports (-webkit-text-stroke-width: 2px) {
+  .nv-stage.is-gap .nv-count {
+    color: transparent;
+    -webkit-text-stroke: 2px var(--text);
+  }
+
+  .nv-stage.is-gap .nv-count.is-accent {
+    -webkit-text-stroke-color: var(--amber);
+  }
+
+  /* Across the room the hairline would disappear, so it scales with the type. */
+  .nv-stage.is-big.is-gap .nv-count {
+    -webkit-text-stroke-width: 5px;
+  }
+}
+
 /* The whole per-beat emphasis: a 8% scale settling back over 120 ms. Transform
    only — no brightness, no glow, no colour blink, nothing that changes the
    luminance of the screen. */
@@ -349,7 +430,8 @@
 }
 
 /* Silence must never read as a broken metronome. */
-.nv-muted-tag {
+.nv-muted-tag,
+.nv-gap-tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -361,36 +443,38 @@
   color: var(--amber);
 }
 
-.nv-muted-tag svg {
+.nv-muted-tag svg,
+.nv-gap-tag svg {
   width: 12px;
   height: 12px;
   flex: 0 0 auto;
 }
 
-/* A rail down the stage's right edge rather than a row across its top. Four
-   buttons side by side reach into the arc the bob sweeps at ±26°; stacked at
-   the edge they sit entirely outside it, so the pendulum keeps its full size
-   and nothing ever passes behind a toggle. */
+/* Gap training's silent bars. Cream rather than amber, and its own wording, so
+   it never reads as the mute the user pressed. Shown by a class instead of the
+   hidden attribute: one state, one switch. */
+.nv-gap-tag {
+  display: none;
+  color: var(--text);
+}
+
+.nv-stage.is-gap .nv-gap-tag {
+  display: inline-flex;
+}
+
+/* A block in the stage's top-right corner rather than a row across its top.
+   Four buttons side by side reach into the arc the bob sweeps at ±26°; two
+   columns of two sit outside it, in the corner the drawing never fills.
+
+   Two columns, not the single one v1.1 stacked: four 44px buttons are 176px
+   tall and the stage is 162px, so a single column could only have been four
+   34px buttons whose padded targets overlapped each other by 8px. These are
+   the shared .icon-btn's own 44px, touching nothing. */
 .nv-tools {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, 44px);
   flex: 0 0 auto;
   gap: 2px;
-}
-
-/* Four stacked 44px buttons are taller than a 190px stage, so the ink shrinks
-   to 36px and the pseudo-element pads the touch target back out to 44px, the
-   way .chip does in the shell. */
-.nv-stage .nv-tool {
-  width: 36px;
-  height: 36px;
-  border-radius: 11px;
-}
-
-.nv-stage .nv-tool::after {
-  content: "";
-  position: absolute;
-  inset: -4px;
 }
 
 .nv-tool[aria-pressed="true"] {
@@ -437,12 +521,16 @@
 /* Position, not pulse. Exactly one dot is filled at a time and the fill steps
    from dot to dot on each beat, then holds. The change is instant on purpose:
    a fade between two states still reads as a blink out of the corner of an eye,
-   and holding still between beats is what makes the position legible. */
+   and holding still between beats is what makes the position legible.
+
+   Symmetric insets, like the pendulum: the row is centred on the card's axis.
+   It clears the rail by sitting under it — the corner block ends 90px down and
+   the dots ride the stage's bottom edge. */
 .nv-dots {
   position: absolute;
   z-index: 2;
   left: 10px;
-  right: var(--nv-rail);
+  right: 10px;
   bottom: 8px;
   display: flex;
   flex-wrap: wrap;
@@ -484,14 +572,13 @@
 .nv-transport-row {
   display: flex;
   justify-content: center;
-  padding: 2px 0 0;
 }
 
 .nv-transport {
   display: grid;
   place-items: center;
-  width: 72px;
-  height: 72px;
+  width: 66px;
+  height: 66px;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 50%;
@@ -593,37 +680,32 @@
   font-size: clamp(88px, 40vmin, 300px);
 }
 
-/* Full-screen leaves room to spare, so the rail relaxes back into a row pinned
-   to the top corner, and the buttons back to the shared 44px. */
+/* Full-screen leaves room to spare, so the two columns relax back into a single
+   row pinned to the top corner. */
 .nv-stage.is-big .nv-tools {
   position: absolute;
   top: calc(env(safe-area-inset-top) + 12px);
   right: calc(env(safe-area-inset-right) + 14px);
   z-index: 3;
+  display: flex;
   flex-direction: row;
   gap: 2px;
-}
-
-.nv-stage.is-big .nv-tool {
-  width: 44px;
-  height: 44px;
-  border-radius: 13px;
-}
-
-.nv-stage.is-big .nv-tool::after {
-  content: none;
 }
 
 .nv-stage.is-big .nv-stage-bpm {
   display: block;
 }
 
-/* Back into flow, taking every pixel the counter and transport leave. */
+/* Back into flow, taking every pixel the counter and transport leave. The
+   corner rail is out of the flow here, so the clearance the card version keeps
+   for it goes too. */
 .nv-stage.is-big .nv-pend-box {
   position: relative;
   inset: auto;
   flex: 1 1 auto;
   min-height: 0;
+  max-width: none;
+  margin-inline: 0;
 }
 
 /* Two things happen here. The ink only spans the middle ~55% of the 300-unit
@@ -704,8 +786,10 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
 .nv-settings {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 10px 14px;
+  /* 6px is the floor: the rows' padded 44px targets sit 4px proud of a 36px
+     row, so anything tighter would have them claiming each other's edges. */
+  gap: 6px;
+  padding: 6px 14px;
 }
 
 .nv-row {
@@ -713,10 +797,11 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 44px;
+  min-height: 36px;
 }
 
 .nv-row-label {
+  flex: 0 0 auto;
   font-size: 14px;
   color: var(--muted);
 }
@@ -725,6 +810,23 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* 36px of ink, 44px of target, so the practice card fits under the settings
+   without either row losing its hit area. The pad grows vertically only — the
+   rows are stacked, so that is the axis where a neighbour could steal an edge,
+   and a horizontal pad on the last button in the row would hang 4px past the
+   card's content box and put the whole row into overflow. */
+.nv-settings .nv-step {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+}
+
+.nv-settings .nv-step::after {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
 }
 
 .nv-bpb-value {
@@ -742,6 +844,11 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
 
 .nv-sub {
   min-width: 46px;
+  min-height: 34px;
+}
+
+.nv-sub::after {
+  inset: -5px 0;
 }
 
 .nv-glyph {
@@ -755,6 +862,171 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
   font-weight: 700;
   vertical-align: super;
   margin-left: 1px;
+}
+
+/* --- practice card ------------------------------------------------------- */
+
+/* Two features, two rows, and nothing here moves on a beat: the switches, the
+   steppers and the summaries all change only when a finger changes them. Each
+   row's steppers unfold under their own switch, so the card is a pair of quiet
+   lines until you turn something on — which is what keeps the tempo panel, the
+   transport and the stage on one screen. */
+.nv-practice {
+  display: flex;
+  flex-direction: column;
+  padding: 0 14px;
+}
+
+.nv-prac + .nv-prac {
+  border-top: 1px solid var(--line);
+}
+
+/* A real 44px row rather than a 32px one wearing a 44px pad: two padded rows
+   this close overlap, and the second one wins the hit test — a tap at the
+   bottom of "Speed trainer" would toggle gap training. The row is its own
+   padding, which is why the card has none of its own top or bottom. */
+.nv-prac-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  text-align: left;
+}
+
+/* Unfolding a row's controls can push them under the tab bar, so the view
+   scrolls the row back into sight; this keeps it off the fade at the edge. */
+.nv-prac {
+  scroll-margin: 8px 0 10px;
+}
+
+.nv-prac-head[aria-pressed="true"] .nv-row-label {
+  color: var(--text);
+}
+
+/* The persisted numbers stay readable with the steppers folded away; once they
+   unfold, the sentence below says the same thing and this steps aside. */
+.nv-prac-sum {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.nv-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgb(0 0 0 / 26%);
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / 40%);
+  transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+
+.nv-switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+
+.nv-prac-head[aria-pressed="true"] .nv-switch {
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+}
+
+.nv-prac-head[aria-pressed="true"] .nv-switch::before {
+  background: var(--amber);
+  transform: translateX(16px);
+}
+
+/* A sentence with steppers in it. It wraps rather than scrolls, so the phrase
+   survives a 320px screen.
+
+   The row gap is 16px because the steppers are 28px of ink wearing a 44px
+   target (see .nv-mini-btn::after): the lines have to sit a full 44px apart or
+   the pads overlap and the lower line wins the hit test — a low tap on
+   "+2 BPM" would change the target tempo instead. The block padding matches the
+   pads' own 8px for the same reason, top and bottom, so the first line cannot
+   reach into the switch above it nor the last into the next row's switch. */
+.nv-prac-cfg {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 6px;
+  padding: 8px 0;
+}
+
+.nv-prac-word {
+  pointer-events: none;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.nv-mini {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.nv-prac-cfg .nv-mini-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  border-color: var(--line);
+  background: rgb(0 0 0 / 22%);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+/* The shared .icon-btn:hover carries the same weight as the rule above and
+   loses on source order, so the hover state is spelled out here. */
+.nv-prac-cfg .nv-mini-btn:hover {
+  border-color: var(--amber-line);
+  color: var(--text);
+}
+
+/* 28px of ink, 44px of target. Nine, not eight: an inset box is laid out
+   against its containing block's *padding* box, and .icon-btn's 1px border is
+   outside that, so -8px would come to 42px and leave a dead 2px band between
+   the lines. -9px reaches exactly 44px, which is also .nv-prac-cfg's row gap
+   plus the button — the pads tile the column instead of overlapping it. */
+.nv-mini-btn::after {
+  content: "";
+  position: absolute;
+  inset: -9px;
+}
+
+/* The readout and the words of the sentence sit inside the steppers' pads and
+   are painted after them, so a tap on the inner few pixels of a target would
+   land on text and do nothing at all. They have nothing to answer for a tap
+   with, so they take themselves out of the hit test. */
+.nv-mini-value {
+  min-width: 28px;
+  pointer-events: none;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
 }
 
 /* Label + segmented control need 288px of row; below ~348px the control would
@@ -787,28 +1059,36 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
   }
 }
 
-/* Short portrait phones: keep the stage above the fold by trimming the
-   pieces that are only large for comfort. */
+/* Short portrait phones: keep the tempo panel, the transport and the whole
+   stage above the fold by trimming the pieces that are only large for comfort.
+   The practice card is allowed to fall below it. The stage keeps its height —
+   it is already at the floor its tool rail sets. */
 @media (max-height: 720px) and (min-height: 561px) {
   .nv {
-    gap: 10px;
+    gap: 8px;
   }
 
   .nv-panel {
-    padding: 10px 12px 10px;
+    padding: 10px 12px 8px;
   }
 
   .nv-bpm-value {
-    font-size: 52px;
+    font-size: 46px;
   }
 
-  .nv-stage {
-    height: 168px;
+  .nv-settings,
+  .nv-practice {
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+
+  .nv-settings {
+    gap: 5px;
   }
 
   .nv-transport {
-    width: 64px;
-    height: 64px;
+    width: 60px;
+    height: 60px;
   }
 }
 
@@ -821,7 +1101,8 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
     grid-template-areas:
       "bpm transport"
       "bpm stage"
-      "settings stage";
+      "settings stage"
+      "practice practice";
     align-items: start;
   }
 
@@ -842,12 +1123,30 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
     grid-area: settings;
   }
 
+  /* Full width under both columns: everything above it is what has to be on
+     screen, and the practice rows can be scrolled to. */
+  .nv-practice {
+    grid-area: practice;
+  }
+
   /* Half a 480px column is too narrow for the unit to overhang the numeral
      without running into the + stepper, so it tucks underneath instead. */
   .nv-bpm {
     flex-direction: column;
     align-items: center;
     gap: 2px;
+  }
+
+  /* Too narrow, too, to pin the trainer's target chip out at the edge without
+     it reaching the tempo mark: it rejoins the line and shares it. */
+  .nv-tempo-line {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .nv-target {
+    position: static;
+    transform: none;
   }
 
   .nv-bpm-unit {
@@ -879,22 +1178,19 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
     font-size: 44px;
   }
 
+  /* Two 44px columns and their gap, same as portrait: the rail is 90px wide and
+     90px tall, which a 132px stage holds with room to spare. Narrowing the
+     columns instead would not narrow the buttons — .icon-btn is 44px in its own
+     right — it would only slide them over each other, and the later one would
+     take the overlap out of its neighbour's hit area. */
   .nv-stage {
-    --nv-rail: 84px;
+    --nv-rail: 90px;
 
     height: 132px;
   }
 
   .nv-count {
     font-size: 34px;
-  }
-
-  /* A 132px stage holds two 36px buttons, not four, so the rail folds into two
-     columns — wider, but still clear of the arc the bob sweeps. Big view has
-     the whole screen and keeps its single row. */
-  .nv-stage:not(.is-big) .nv-tools {
-    display: grid;
-    grid-template-columns: repeat(2, 36px);
   }
 
   /* Half a 480px column, less the two-column rail, leaves ~124px of dot row.
