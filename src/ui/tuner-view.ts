@@ -71,6 +71,31 @@ const ANALYSIS_FLOOR_RATIO = 0.85;
     baritone uke's D3, read as silence. */
 const SUB_BAND_RATIO = 0.8;
 
+/** Guided tuning: how long the median has to stay inside the latch's release
+    band AFTER the in-tune latch fires before the string is called done. The
+    latch alone is 3 frames at ±5 cents — enough to light the card, not enough to
+    walk away from a peg that is still creeping. There is deliberately no second
+    detector here: this reads the latch's own clock (`inTuneAt`), so a string
+    that falls out of the band resets the latch and the dwell with it. */
+const GUIDE_CONFIRM_MS = 900;
+/** A done string that drifts this far while the guide is watching loses its
+    check. Same number as the latch's release band, so "no longer in tune" means
+    one thing in this view. */
+const GUIDE_RECHECK_CENTS = OUT_OF_TUNE_CENTS;
+/** A confirm hands the guide the next string within one detect interval, and a
+    polite region rewritten 25 ms later announces only the last thing in it. Pin
+    the sentence for long enough to be spoken before the direction hint takes the
+    region back. */
+const ANNOUNCE_HOLD_MS = 1400;
+/** The string that was just confirmed is still ringing — a guitar's low E for
+    ten seconds or more — and the guide has already moved on under it. Keep the
+    readout on the string that was finished, in its in-tune state, for this long
+    (or until the pitch leaves its release band, whichever comes first) so the
+    player is never told to retune the string they have just tuned. The strip
+    moves on immediately: the check, the counter and the next target are the
+    answer to "what now", the readout is the answer to "did that work". */
+const GUIDE_HOLD_MS = 1200;
+
 type Phase = 'idle' | 'starting' | 'live' | 'blocked';
 
 /** Once the user grants the mic we may re-open it on show() without a gesture. */
@@ -148,11 +173,54 @@ function formatCents(cents: number): string {
   return `${r > 0 ? '+' : '−'}${Math.abs(r)}¢`;
 }
 
+/** Guided, one target is held however far the pitch is from it, so the offset
+    can be an octave while the arc stops at ±RANGE_CENTS. Clamping the NUMBER to
+    the arc prints a precise-looking lie — a string a fifth flat and a string 50
+    cents flat read the same "−50¢", and the figure does not move for the whole
+    wind-up from slack. Past the arc, say that it is past the arc. */
+function formatGuidedCents(cents: number): string {
+  if (cents > RANGE_CENTS) return `> ${formatCents(RANGE_CENTS)}`;
+  if (cents < -RANGE_CENTS) return `< ${formatCents(-RANGE_CENTS)}`;
+  return formatCents(cents);
+}
+
+/** Are these the same targets? Not "was the tuning id re-emitted": the state
+    layer notifies on every write, and picking the row that is already current
+    re-emits an unchanged id. Only a set that really differs invalidates what the
+    guide has ticked off. */
+function sameTargets(a: NoteInfo[], b: NoteInfo[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].pc !== b[i].pc || a[i].octave !== b[i].octave || a[i].freq !== b[i].freq) return false;
+  }
+  return true;
+}
+
+/** "F#3" is read as an unpronounceable token or, worse, "F hash 3"; every live
+    region in the app spells the accidental out. Naturals keep their compact
+    spelling, which screen readers already say correctly. */
+function spokenName(note: NoteInfo): string {
+  return note.pc.length > 1 ? `${note.pc.charAt(0)} sharp ${note.octave}` : note.name;
+}
+
 function micIcon(): SVGSVGElement {
   const icon = s('svg', { viewBox: '0 0 24 24', class: 'tv-ico', 'aria-hidden': 'true' });
   icon.appendChild(s('rect', { x: 9, y: 2.5, width: 6, height: 11, rx: 3 }));
   icon.appendChild(s('path', { d: 'M5.5 11.5a6.5 6.5 0 0 0 13 0' }));
   icon.appendChild(s('path', { d: 'M12 18v3.5' }));
+  return icon;
+}
+
+/** The one "done" mark in the view: a plain stroked tick, drawn once and shown
+    or hidden by a class. Nothing about it moves or fades in. */
+function checkIcon(cls: string): SVGSVGElement {
+  const icon = s('svg', {
+    viewBox: '0 0 24 24',
+    class: cls,
+    'aria-hidden': 'true',
+    focusable: 'false',
+  });
+  icon.appendChild(s('path', { d: 'M5 12.6 9.8 17.4 19 6.9' }));
   return icon;
 }
 
@@ -266,6 +334,33 @@ export function createTunerView(): ViewHandle {
   let relaxed = true;
   let activeIdx = -1;
 
+  /* ---------- guided tuning ---------- */
+
+  /** Off on every load — a guide that resumed itself would be answering a
+      question the player did not ask this session. */
+  let guideOn = false;
+  /** Index into targetNotes (low string first), or -1 once every string is done
+      and the guide has nothing left to point at. */
+  let guideIndex = 0;
+  let done: boolean[] = [];
+  let complete = false;
+  /** Frames a finished string has read out of tune for, so one attack transient
+      cannot un-tick a check. Mirrors IN_TUNE_FRAMES on the way in. */
+  let recheckStreak = 0;
+  /** The string whose success readout owns the display, or -1. Set by a confirm,
+      given back by endHold(). */
+  let holdIdx = -1;
+  let holdUntil = 0;
+  /** When the current guided target started earning its dwell. The in-tune
+      latch's own clock is not enough on its own: the success hold can hand the
+      guide a string that is ALREADY sounding at pitch, and a latch inherited
+      from the string before it would confirm that one on the spot. */
+  let guideSince = 0;
+  /** While a confirm sentence owns the live region, routine hint text waits. */
+  let announceHoldUntil = 0;
+  /** What the hint would be saying if nothing were holding the region. */
+  let pendingSpoken = 'Play a string';
+
   const recent = new Float64Array(MEDIAN_N);
   const recentSorted = new Float64Array(MEDIAN_N);
   let recentCount = 0;
@@ -305,8 +400,16 @@ export function createTunerView(): ViewHandle {
   const freqEl = h('span', 'tv-freq', '—');
   const centsEl = h('span', 'tv-cents', '—');
   metrics.append(freqEl, h('span', 'tv-sep'), centsEl);
-  const hintEl = h('div', 'tv-hint', 'Play a string');
+  /* One polite region, two spellings: the eye gets a short tracked-out label
+     with an arrow in it, the ear gets a sentence with the accidental spelled
+     out. The visible half is aria-hidden so writing it never announces. */
+  const hintEl = h('div', 'tv-hint');
   hintEl.setAttribute('aria-live', 'polite');
+  const hintCheck = checkIcon('tv-hint-check');
+  const hintText = h('span', 'tv-hint-text', 'Play a string');
+  hintText.setAttribute('aria-hidden', 'true');
+  const hintSpoken = h('span', 'sr-only tv-hint-spoken', 'Play a string');
+  hintEl.append(hintCheck, hintText, hintSpoken);
   readout.append(noteEl, metrics, hintEl);
   card.appendChild(readout);
 
@@ -319,10 +422,18 @@ export function createTunerView(): ViewHandle {
   card.appendChild(cta);
   el.appendChild(card);
 
+  const strings = h('div', 'tv-strings');
+  const stringsHead = h('div', 'tv-strings-head');
+  const stringsTitle = h('p', 'tv-strings-title', 'Strings');
+  const guideBtn = h('button', 'btn btn-ghost tv-guide', 'Tune all');
+  guideBtn.type = 'button';
+  guideBtn.setAttribute('aria-pressed', 'false');
+  stringsHead.append(stringsTitle, guideBtn);
   const strip = h('div', 'tv-strip');
   strip.setAttribute('role', 'list');
   strip.setAttribute('aria-label', 'Target strings');
-  el.appendChild(strip);
+  strings.append(stringsHead, strip);
+  el.appendChild(strings);
 
   const status = h('div', 'tv-status');
   status.append(h('span', 'tv-dot'), h('span', undefined, 'Listening'));
@@ -362,15 +473,21 @@ export function createTunerView(): ViewHandle {
     el.classList.toggle('is-idle', on);
   }
 
+  /** The one haptic gate in the view. Arrival at pitch and a guided confirm are
+      900 ms apart, so the confirm normally lands inside the gate and the player
+      feels a single buzz per string — which is the point of it. */
+  function buzz(now: number, ms: number): void {
+    if (now - lastVibeAt < VIBE_GAP_MS) return;
+    lastVibeAt = now;
+    navigator.vibrate?.(ms);
+  }
+
   function setInTune(on: boolean, now: number): void {
     if (inTune === on) return;
     inTune = on;
     inTuneAt = now;
     el.classList.toggle('is-intune', on);
-    if (on && now - lastVibeAt >= VIBE_GAP_MS) {
-      lastVibeAt = now;
-      navigator.vibrate?.(10);
-    }
+    if (on) buzz(now, 10);
   }
 
   function setActiveString(idx: number): void {
@@ -380,20 +497,225 @@ export function createTunerView(): ViewHandle {
     activeIdx = idx;
   }
 
+  /** Players count strings from the thinnest, so the lowest string carries the
+      highest number — the same numbering the tuning editor uses. The guide walks
+      them in position order (lowest first), which is the reverse. */
+  function stringNo(i: number): number {
+    return targetNotes.length - i;
+  }
+
+  function pillLabel(i: number): string {
+    const base = `String ${stringNo(i)}, ${spokenName(targetNotes[i])}`;
+    return guideOn && done[i] === true ? `${base}, in tune` : base;
+  }
+
+  /** Writes the spoken half of the hint. A polite region whose text already ENDS
+      with this sentence has already said it, and rewriting it is a second
+      mutation, which a screen reader reads out a second time: that is how
+      completion used to be announced twice — "…in tune. All strings in tune",
+      then "All strings in tune" again when the hold expired. */
+  function speak(text: string): void {
+    const current = hintSpoken.textContent ?? '';
+    if (current === text || current.endsWith(text)) return;
+    setText(hintSpoken, text);
+  }
+
+  /** Writes the hint's two halves. The spoken half waits while a confirm
+      sentence is still being read out. */
+  function setHint(visible: string, spoken: string): void {
+    setText(hintText, visible);
+    pendingSpoken = spoken;
+    if (performance.now() >= announceHoldUntil) speak(spoken);
+  }
+
+  /** Take the live region for one sentence, and keep it for ANNOUNCE_HOLD_MS. */
+  function announce(text: string): void {
+    announceHoldUntil = performance.now() + ANNOUNCE_HOLD_MS;
+    setText(hintSpoken, text);
+  }
+
   function renderStrip(): void {
     strip.textContent = '';
     activeIdx = -1;
+    /* Guided, a pill is a control: tapping one moves the guide to that string.
+       Unguided it is what it has always been — a read-only list item that the
+       nearest-string pick highlights — so nothing here is focusable and the
+       list semantics are untouched. */
+    strip.setAttribute('role', guideOn ? 'group' : 'list');
     pills = targetNotes.map((note, i) => {
-      const pill = h('span', 'pill tv-string');
-      pill.setAttribute('role', 'listitem');
-      pill.setAttribute('aria-label', `String ${targetNotes.length - i}, ${note.name}`);
+      let pill: HTMLElement;
+      if (guideOn) {
+        const button = h('button', 'pill tv-string');
+        button.type = 'button';
+        button.addEventListener('click', () => {
+          selectGuide(i);
+        });
+        pill = button;
+      } else {
+        pill = h('span', 'pill tv-string');
+        pill.setAttribute('role', 'listitem');
+      }
       pill.append(
+        checkIcon('tv-check'),
         h('span', 'tv-string-pc', prettyPc(note.pc)),
         h('span', 'tv-string-oct', String(note.octave)),
       );
+      pill.setAttribute('aria-label', pillLabel(i));
       return pill;
     });
     for (const pill of pills) strip.appendChild(pill);
+  }
+
+  /** How many strings are ticked off. One source for the head counter and the
+      spoken one, so the two can never disagree. */
+  function doneCount(): number {
+    let n = 0;
+    for (let i = 0; i < targetNotes.length; i++) {
+      if (done[i]) n++;
+    }
+    return n;
+  }
+
+  /** Pushes the guide's state onto the strip, the toggle and the head counter.
+      Every one of these is an instant class or text swap — nothing here starts
+      an animation. */
+  function syncGuide(): void {
+    const n = targetNotes.length;
+    const count = doneCount();
+    guideBtn.setAttribute('aria-pressed', guideOn ? 'true' : 'false');
+    el.classList.toggle('is-guided', guideOn);
+    el.classList.toggle('is-complete', guideOn && complete);
+    setText(
+      stringsTitle,
+      !guideOn ? 'Strings' : complete ? 'All in tune' : `${count} of ${n} in tune`,
+    );
+    stringsTitle.classList.toggle('is-done', guideOn && complete);
+    for (let i = 0; i < pills.length; i++) {
+      const pill = pills[i];
+      const isDone = guideOn && done[i] === true;
+      const isGuided = guideOn && i === guideIndex;
+      pill.classList.toggle('is-done', isDone);
+      pill.classList.toggle('is-guided', isGuided);
+      if (isGuided) pill.setAttribute('aria-current', 'true');
+      else pill.removeAttribute('aria-current');
+      pill.setAttribute('aria-label', pillLabel(i));
+    }
+  }
+
+  function resetGuideProgress(): void {
+    done = targetNotes.map(() => false);
+    guideIndex = 0;
+    complete = false;
+    recheckStreak = 0;
+    holdIdx = -1;
+  }
+
+  /** Drop the latch so the string the guide just moved to has to earn its own
+      three frames and its own dwell, instead of inheriting the last one's. For
+      the moves the PLAYER makes — the toggle, a pill, a string that drifted —
+      where the card going out of its in-tune state is the honest answer. */
+  function restartLatch(now: number): void {
+    inTuneStreak = 0;
+    recheckStreak = 0;
+    holdIdx = -1;
+    guideSince = now;
+    setInTune(false, now);
+  }
+
+  /** Give the display back after a confirm's success readout. The in-tune latch
+      is deliberately NOT forced off here: by now the player has usually moved on
+      to the next string, and if that one is already at pitch, dropping green for
+      a frame and taking it straight back is a flash. The ordinary path below
+      turns it off on the very next frame if the new target is out of tune, which
+      is the only case where it should go — while `guideSince` still makes the
+      new string serve its own 900 ms before it can be confirmed. */
+  function endHold(now: number): void {
+    if (holdIdx < 0) return;
+    holdIdx = -1;
+    inTuneStreak = 0;
+    recheckStreak = 0;
+    guideSince = now;
+  }
+
+  function setGuideOn(on: boolean): void {
+    if (guideOn === on) return;
+    guideOn = on;
+    resetGuideProgress();
+    renderStrip();
+    const now = performance.now();
+    restartLatch(now);
+    syncGuide();
+    // Live, the next detection (25 ms away) redraws the readout against the new
+    // target; idle, this is what refreshes the hint.
+    if (relaxed || !mic) relax(true, now);
+  }
+
+  /** Tapping a pill moves the guide there. A finished string gives its check
+      back when it is revisited: the player is asking to tune it again. */
+  function selectGuide(i: number): void {
+    if (!guideOn || i < 0 || i >= targetNotes.length) return;
+    const now = performance.now();
+    done[i] = false;
+    complete = false;
+    guideIndex = i;
+    restartLatch(now);
+    syncGuide();
+    if (relaxed || !mic) relax(true, now);
+  }
+
+  function nextNotDone(from: number): number {
+    const n = targetNotes.length;
+    for (let k = 1; k <= n; k++) {
+      const i = (from + k) % n;
+      if (!done[i]) return i;
+    }
+    return -1;
+  }
+
+  function confirmGuided(now: number): void {
+    const i = guideIndex;
+    if (i < 0 || i >= targetNotes.length) return;
+    done[i] = true;
+    buzz(now, 24);
+    // Player numbering names the string; the COUNT is the progress the head
+    // counter is showing at this instant. They used to be the same number read
+    // two ways — "String 6 of 6" for the first string of six confirmed, next to
+    // a head reading "1 of 6 in tune".
+    const line =
+      `String ${stringNo(i)}, ${spokenName(targetNotes[i])} — in tune. ` +
+      `${doneCount()} of ${targetNotes.length} done`;
+    const next = nextNotDone(i);
+    // The string is still ringing: hold the readout on it, in tune and green,
+    // while the strip moves on. endHold() takes it back.
+    holdIdx = i;
+    holdUntil = now + GUIDE_HOLD_MS;
+    inTuneStreak = 0;
+    recheckStreak = 0;
+    guideSince = now;
+    if (next < 0) {
+      complete = true;
+      // Nothing left to point at: the readout goes back to naming whatever it
+      // hears, which is what makes re-plucking a drifted string reopen it.
+      guideIndex = -1;
+      // Both sentences in one write — a second write 0 ms later would replace
+      // the first before it was ever spoken.
+      announce(`${line}. All strings in tune`);
+    } else {
+      guideIndex = next;
+      announce(line);
+    }
+    syncGuide();
+  }
+
+  /** A finished string that has drifted takes its check back and becomes the
+      target again. */
+  function reopenGuide(i: number, now: number): void {
+    done[i] = false;
+    complete = false;
+    guideIndex = i;
+    restartLatch(now);
+    setActiveString(-1);
+    syncGuide();
   }
 
   /** Tell the capture where the instrument starts, and remember what it did with
@@ -427,12 +749,21 @@ export function createTunerView(): ViewHandle {
   }
 
   function refreshTuning(): void {
+    const previous = targetNotes;
     targetNotes = tuningNotes(tuningById(state.tuningId), state.a4);
+    // A different instrument, or a different A4, is a different set of targets:
+    // whatever was ticked off was ticked off against the old ones. The SAME set
+    // is not — and this runs on every state write, so it also runs when the
+    // player opens the tuning sheet and picks the row that is already current,
+    // or saves the editor over an unchanged tuning. Those must cost nothing.
+    if (!sameTargets(previous, targetNotes)) resetGuideProgress();
     renderStrip();
     // Readings taken through the old band, against the old targets, say nothing
     // about the new ones.
     clearMedian();
     applyAnalysisFloor();
+    syncGuide();
+    if (relaxed) relax(true);
   }
 
   /* The dwell floor is not consulted here: relaxing means HOLD_MS (600 ms) has
@@ -441,8 +772,13 @@ export function createTunerView(): ViewHandle {
   function relax(force: boolean, now = performance.now()): void {
     if (relaxed && !force) return;
     relaxed = true;
+    // The string stopped sounding, so the success readout has nothing left to
+    // hold: the guide gets the display back and the hint below names the next
+    // string to play.
+    endHold(now);
     targetAngle = 0;
     inTuneStreak = 0;
+    recheckStreak = 0;
     clearMedian();
     setInTune(false, now);
     setIdleVisual(true);
@@ -452,34 +788,99 @@ export function createTunerView(): ViewHandle {
     setText(octEl, '');
     setText(freqEl, '—');
     setText(centsEl, '—');
-    setText(hintEl, 'Play a string');
+    if (guideOn && complete) {
+      setHint('All in tune', 'All strings in tune');
+    } else if (guideOn && guideIndex >= 0 && guideIndex < targetNotes.length) {
+      // The one thing a guided player needs while nothing is sounding: which
+      // string to pluck next.
+      const no = stringNo(guideIndex);
+      setHint(`Play string ${no}`, `Play string ${no}, ${spokenName(targetNotes[guideIndex])}`);
+    } else {
+      setHint('Play a string', 'Play a string');
+    }
   }
 
   function applyPitch(freq: number, now: number): void {
-    let idx = -1;
-    let cents = 0;
-    let closest = Infinity;
-    for (let i = 0; i < targetNotes.length; i++) {
-      const c = centsBetween(freq, targetNotes[i].freq);
-      const a = Math.abs(c);
-      if (a < closest) {
-        closest = a;
-        cents = c;
-        idx = i;
+    /* A string that has just been confirmed is still ringing under the guide's
+       next target, and the readout it would get there is the most alarming one
+       there is: another note's name, the needle pinned, "TUNE UP". Show the
+       success instead, and only for as long as it is true — the moment the pitch
+       leaves the finished string's release band (the player damped it, or moved
+       on) or GUIDE_HOLD_MS passes, the guide has the display back. */
+    if (holdIdx >= 0 && holdIdx < targetNotes.length) {
+      const held = targetNotes[holdIdx];
+      const heldCents = centsBetween(freq, held.freq);
+      if (now < holdUntil && Math.abs(heldCents) <= OUT_OF_TUNE_CENTS) {
+        relaxed = false;
+        setIdleVisual(false);
+        targetAngle = centsToDeg(heldCents);
+        setText(pcEl, held.pc.charAt(0));
+        setText(accEl, held.pc.length > 1 ? '♯' : '');
+        setText(octEl, String(held.octave));
+        setText(freqEl, formatFreq(freq));
+        setText(centsEl, formatCents(heldCents));
+        setActiveString(-1);
+        // The latch is already on and stays on: this is the in-tune state the
+        // string earned, held still rather than re-entered.
+        if (complete) setHint('All in tune', 'All strings in tune');
+        else setHint('In tune', 'In tune');
+        return;
       }
+      /* Handing the display back is a change of meaning, not of pitch: the
+         median still holds five frames of the string that was ringing, and
+         reading those against the new target is a wild offset for two or three
+         frames — long enough to blink the in-tune state off and straight back
+         on when the player has already moved to a string that is at pitch.
+         Start the median over and let the next detection speak for itself. */
+      endHold(now);
+      clearMedian();
+      return;
     }
 
+    const guided = guideOn && guideIndex >= 0 && guideIndex < targetNotes.length;
+    let idx = -1;
+    let cents = 0;
     let pc: string;
     let octave: number;
-    if (idx >= 0 && closest <= STRING_WINDOW_CENTS) {
+    /* The nearest string of the tuning and its offset, kept whatever the display
+       decides to do with them: past STRING_WINDOW_CENTS the readout falls back
+       to the chromatic note, and the completion re-check below must not fall
+       back with it — that is exactly the drift it exists to catch. */
+    let nearestIdx = -1;
+    let nearestCents = 0;
+
+    if (guided) {
+      // The whole point of the guide: one target, held. A string being brought
+      // up from slack passes every other string's window on the way, and a
+      // display that follows it there is a display that cannot be tuned by.
+      idx = guideIndex;
+      cents = centsBetween(freq, targetNotes[idx].freq);
       pc = targetNotes[idx].pc;
       octave = targetNotes[idx].octave;
     } else {
-      const chromatic = nearestNote(freq, state.a4);
-      pc = chromatic.note.pc;
-      octave = chromatic.note.octave;
-      cents = chromatic.cents;
-      idx = -1;
+      let closest = Infinity;
+      for (let i = 0; i < targetNotes.length; i++) {
+        const c = centsBetween(freq, targetNotes[i].freq);
+        const a = Math.abs(c);
+        if (a < closest) {
+          closest = a;
+          cents = c;
+          idx = i;
+        }
+      }
+      nearestIdx = idx;
+      nearestCents = cents;
+
+      if (idx >= 0 && closest <= STRING_WINDOW_CENTS) {
+        pc = targetNotes[idx].pc;
+        octave = targetNotes[idx].octave;
+      } else {
+        const chromatic = nearestNote(freq, state.a4);
+        pc = chromatic.note.pc;
+        octave = chromatic.note.octave;
+        cents = chromatic.cents;
+        idx = -1;
+      }
     }
 
     relaxed = false;
@@ -490,8 +891,12 @@ export function createTunerView(): ViewHandle {
     setText(accEl, pc.length > 1 ? '♯' : '');
     setText(octEl, String(octave));
     setText(freqEl, formatFreq(freq));
-    setText(centsEl, formatCents(cents));
-    setActiveString(idx);
+    // Guided, the offset can be an octave: the needle stops at the end of the
+    // arc, the number says which side of it the string is on.
+    setText(centsEl, guided ? formatGuidedCents(cents) : formatCents(cents));
+    // While the guide runs, the guided ring is the only pill treatment — the
+    // nearest-string highlight would be pointing somewhere else.
+    setActiveString(guideOn ? -1 : idx);
 
     const off = Math.abs(cents);
     if (off <= IN_TUNE_CENTS) {
@@ -501,7 +906,40 @@ export function createTunerView(): ViewHandle {
       inTuneStreak = 0;
       if (off > OUT_OF_TUNE_CENTS && now - inTuneAt >= IN_TUNE_MIN_MS) setInTune(false, now);
     }
-    setText(hintEl, inTune ? 'In tune' : cents < 0 ? 'Tune up ↑' : 'Tune down ↓');
+
+    /* Finished, and what is sounding is not where its string should be. Resolved
+       against the guide's own target set by index — a peg that let go drops a
+       string a tone or more, which is further than the display's 120-cent window
+       and used to be exactly where the guide stopped looking. */
+    const drifted =
+      guideOn &&
+      complete &&
+      nearestIdx >= 0 &&
+      done[nearestIdx] === true &&
+      Math.abs(nearestCents) > GUIDE_RECHECK_CENTS;
+
+    if (guided) {
+      // The latch's own clock: it was reset the moment the median left the
+      // release band, so surviving to here means the string held. `guideSince`
+      // is the other half — a target the guide was handed a moment ago has not
+      // held anything yet, however long the latch has been on.
+      if (inTune && now - inTuneAt >= GUIDE_CONFIRM_MS && now - guideSince >= GUIDE_CONFIRM_MS) {
+        confirmGuided(now);
+      }
+    } else if (drifted) {
+      if (++recheckStreak >= IN_TUNE_FRAMES) reopenGuide(nearestIdx, now);
+    } else {
+      recheckStreak = 0;
+    }
+
+    // "All in tune" is a claim about what the tuner can hear. While it is
+    // hearing a string that is out of tune, the honest line is the one that says
+    // which way to turn — for the two or three frames the re-check above takes
+    // to hand the guide back to that string, and for as long afterwards.
+    if (guideOn && complete && !drifted) setHint('All in tune', 'All strings in tune');
+    else if (inTune) setHint('In tune', 'In tune');
+    else if ((drifted ? nearestCents : cents) < 0) setHint('Tune up ↑', 'Tune up');
+    else setHint('Tune down ↓', 'Tune down');
   }
 
   function tick(now: number): void {
@@ -524,6 +962,11 @@ export function createTunerView(): ViewHandle {
       }
     }
 
+    // Hand the live region back once the confirm sentence has had its moment —
+    // unless the sentence in there already ends with what the hint wants to say,
+    // which is what the completion line does.
+    if (now >= announceHoldUntil) speak(pendingSpoken);
+
     angle += (targetAngle - angle) * SMOOTH_ALPHA;
     if (!(Math.abs(angle - writtenAngle) < ANGLE_EPSILON)) {
       writtenAngle = angle;
@@ -544,7 +987,12 @@ export function createTunerView(): ViewHandle {
         : 'No audio input was available. Check that a microphone is connected and that no other app has taken it, then try again.',
     );
     steps.hidden = !denied;
+    // Nothing was heard, so nothing that was ticked off can still be trusted.
+    // (hide() is not this: the guide is meant to survive a trip to another tab.)
+    resetGuideProgress();
+    syncGuide();
     setPhase('blocked');
+    relax(true);
   }
 
   async function start(): Promise<void> {
@@ -628,6 +1076,9 @@ export function createTunerView(): ViewHandle {
   retryBtn.addEventListener('click', () => {
     setPhase('idle');
     void start();
+  });
+  guideBtn.addEventListener('click', () => {
+    setGuideOn(!guideOn);
   });
 
   subscribe((next: AppState) => {

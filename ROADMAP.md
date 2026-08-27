@@ -1,9 +1,6 @@
 # TrueString roadmap
 
-The near-term direction, in order. (History: v1.0 tuner+metronome, v1.1 visual beat stage — flash-free by design, v1.2 practice tools + UX audit, v1.3 noise robustness.)
-
-## v1.4 — Guided tuning
-Tune-all-strings mode on the Auto tab: the app highlights the low string, listens, marks it done when it locks in tune (the existing +-5 cent latch), auto-advances to the next, and ends in an "all in tune" state. Zero decisions for the player; designed flash-free like everything else.
+The near-term direction, in order. (History: v1.0 tuner+metronome, v1.1 visual beat stage — flash-free by design, v1.2 practice tools + UX audit, v1.3 noise robustness, v1.4 guided tuning.)
 
 ## v1.5 — Sweetened tunings & capo
 - Per-string **cent offsets** in the custom tuning editor (and a couple of sweetened factory presets) so targets can sit a few cents off equal temperament — the thing high-end tuners sell.

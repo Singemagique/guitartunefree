@@ -6,7 +6,7 @@
 
 ## Features
 
-- **Auto tuner** — pitch detection from your microphone (McLeod Pitch Method / NSDF, sub-cent parabolic interpolation) with an analog-style needle gauge, cents readout, and per-string targeting that glows green when you're within ±5¢. Built for noisy rooms: an adaptive noise gate, tuning-aware band-pass filtering, median outlier rejection, and pitch-continuity tracking keep it locked on the string, not the background.
+- **Auto tuner** — pitch detection from your microphone (McLeod Pitch Method / NSDF, sub-cent parabolic interpolation) with an analog-style needle gauge, cents readout, and per-string targeting that glows green when you're within ±5¢. **Tune all** mode walks you through every string low to high, checks each off as it locks in tune, and re-opens any string that drifts. Built for noisy rooms: an adaptive noise gate, tuning-aware band-pass filtering, median outlier rejection, and pitch-continuity tracking keep it locked on the string, not the background.
 - **Manual tuner** — a headstock with tappable string buttons that play Karplus–Strong synthesized reference plucks. Loop a single string or strum them all.
 - **Instruments & tunings** — ten guitar presets (Standard E, Drop D, E♭ Standard, D Standard, Drop C, DADGAD, Open G, Open D, Open E, Open A) plus bass (4- and 5-string), ukulele, and mandolin — and a **custom tuning editor** (4–8 strings, any pitches). The selected tuning drives both tuners and is remembered.
 - **Drone** — a warm sustained reference tone on any pitch, for intonation practice. Keeps sounding while you tune or use the metronome.
@@ -33,7 +33,7 @@ npm run preview  # serve the production build
 
 ## Android
 
-**Quick install:** grab `TrueString-v1.3.0-debug.apk` from the [latest release](https://github.com/Singemagique/guitartunefree/releases/latest) (or the `truestring-debug-apk` artifact on any [Android CI run](https://github.com/Singemagique/guitartunefree/actions/workflows/android.yml)).
+**Quick install:** grab `TrueString-v1.4.0-debug.apk` from the [latest release](https://github.com/Singemagique/guitartunefree/releases/latest) (or the `truestring-debug-apk` artifact on any [Android CI run](https://github.com/Singemagique/guitartunefree/actions/workflows/android.yml)).
 
 To build it yourself, the app ships as a Capacitor-wrapped Android project in [`android/`](android/).
 
@@ -46,7 +46,7 @@ Requirements: Android Studio (or the Android SDK + Gradle). The `RECORD_AUDIO` p
 
 ## Roadmap
 
-Guided tuning, sweetened tunings & capo transpose, and polyphonic (strum) tuning — see [ROADMAP.md](ROADMAP.md).
+Sweetened tunings & capo transpose, then polyphonic (strum) tuning — see [ROADMAP.md](ROADMAP.md).
 
 ## License
 

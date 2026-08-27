@@ -339,3 +339,21 @@ Goal: keep today's accuracy in quiet rooms and stop the tuner from "hearing" pit
 ### Documented limitations (accepted trade-offs, v1.3)
 - A tone that fades in from under the opening gate and rises slower than the fast floor's chase (~2-8 dB/s) is not detected. Plucked and struck notes always open with a transient well above the gate, so no supported instrument hits this; bowed/swelled sources would.
 - A synthesised tone held at a perfectly constant level for > 5 s in a room that has been silent since mic start is eventually classified as background. No physical string can do this (they decay); it matters only when tuning to another device's test tone through the mic.
+
+
+## v1.4 — Guided tuning
+
+One-tap "Tune all" flow on the Auto tab: the app walks the player through every string of the selected tuning, low to high, marking each as it locks in tune, ending in an "all in tune" state. Flash-free like everything else; all state changes are static.
+
+### Behaviour (src/ui/tuner-view.ts + tuner-view.css only)
+- **Entry**: a "Tune all" toggle button (`.tv-guide`, `aria-pressed`, static accessible name) sits with the string strip. Off by default on every load (not persisted). Turning it on targets string 1 (position order, low string first — the ukulele's reentrant G is simply string 1). Turning it off returns to today's nearest-string auto mode and clears all progress.
+- **While guided**: the gauge, cents readout and direction hint are computed against the CURRENT guided string only — never the chromatic nearest note and never another string, no matter how far off the pitch is (this is the point: a string tuned from slack must not make the display jump targets). The guided string's pill gets a distinct treatment (`.is-guided`, amber ring + subtle pointer); pills of completed strings get a static check (`.is-done`, small inline SVG check, green tint). Tapping ANY pill while guided moves guidance to that string (done strings can be revisited; revisiting clears that string's done state until re-confirmed).
+- **Lock + advance**: a guided string is confirmed when the existing in-tune latch fires (entry <= 5 cents after 3 frames) and the median pitch HOLDS inside the release band for GUIDE_CONFIRM_MS = 900 ms more. On confirm: mark done (static check), one rate-limited haptic (reuse the existing vibrate gate), advance to the next not-done string (wrapping past the end to the lowest not-done). If every string is done: **completion** — the readout area shows a static "All in tune" state (green accents, no animation beyond the existing needle), a polite live-region announcement, and the toggle stays on so re-plucking a drifted string can re-run (a done string that later reads > 8 cents off while guided targets it loses its check and guidance returns to it).
+- **Announcements**: the existing polite live region announces "String {playerNo}, {note} — in tune. {doneCount} of {N} done" on each confirm (player string numbering — thinnest = 1 — while the done-count matches the visible head counter) and "All strings in tune" exactly once on completion, debounced through the existing announcement machinery; the sharp sign is spelled ("F sharp 3") per the v1.2 rule.
+- **Resets**: tuning or A4 change, mic stop/denied, or toggling guided off clears progress. Guided survives hide()/show() (progress kept while the session lives; the mic restart on show() does not clear it).
+- **No-flash rule**: checks appear/disappear as instant static changes; nothing pulses.
+
+### Verification bar
+- Headless Chrome end-to-end with a fake mic (--use-file-for-fake-audio-capture, generated WAV): a WAV playing each open string of Standard E in tune for ~1.6 s in sequence must check all six pills off in order and reach the completion state with zero manual input beyond starting the mic and enabling the guide; a second WAV where string 3 is 20 cents flat must NOT confirm string 3 (guidance stays) until a later in-tune segment.
+- Nearest-string auto mode unchanged when the toggle is off (existing suites).
+- Keyboard: the toggle and pills operable; aria states correct; contrast AA on the new treatments; targets >= 44px.
