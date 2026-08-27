@@ -4,8 +4,8 @@ import { getState, subscribe } from '../state';
 import type { NoteInfo } from '../music/notes';
 import { centsBetween, nearestNote, prettyPc } from '../music/notes';
 import { tuningById, tuningNotes } from '../music/tunings';
-import { MicCapture } from '../audio/mic';
-import { PitchDetector } from '../audio/pitch';
+import { MicCapture, clampAnalysisFloor } from '../audio/mic';
+import { MIN_FREQ, PitchDetector } from '../audio/pitch';
 import { holdWake, releaseWake } from '../wakelock';
 
 export interface ViewHandle {
@@ -51,6 +51,25 @@ const IN_TUNE_MIN_MS = 400;
 const VIBE_GAP_MS = 1000;
 /** Snap to a tuning's string only when the pitch is this close to it. */
 const STRING_WINDOW_CENTS = 120;
+/** Frames behind the median. Five ~25 ms detections span ~125 ms — short enough
+    that the needle still feels attached to the string, long enough that two
+    stray frames in a row cannot move it. */
+const MEDIAN_N = 5;
+/** Cut the analysis band this far under the tuning's lowest string. A tone a
+    semitone flat is still 6% above its target, so 0.85 leaves room to hear a
+    badly slack string while dropping everything below the instrument. */
+const ANALYSIS_FLOOR_RATIO = 0.85;
+/** Detections this far below the analysis band are artefacts by construction:
+    the highpass has already gutted any real signal down there, so a "pitch"
+    below it is hum or a phantom common period, never the instrument.
+
+    "The analysis band" means the cutoff the filter is actually running at, not
+    the one this view asked for. They agree for every guitar and bass preset, but
+    a ukulele asks for 222 Hz and gets the highpass's 90 Hz ceiling: fencing on
+    the request threw away everything under 178 Hz — a band the filter was
+    passing within a third of a dB — so a uke C string a fifth flat, or a
+    baritone uke's D3, read as silence. */
+const SUB_BAND_RATIO = 0.8;
 
 type Phase = 'idle' | 'starting' | 'live' | 'blocked';
 
@@ -83,6 +102,27 @@ function setText(node: Element, text: string): void {
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+/**
+ * Median of the first `count` entries of `buf`, sorted into `scratch` so the
+ * ring keeps its arrival order. A mean would let one frame that landed an octave
+ * or a harmonic away drag the needle a visible distance; the median simply does
+ * not see it, as long as its friends outnumber it. Five entries at most, so an
+ * insertion sort is both the fastest and the only allocation-free option.
+ */
+function medianOf(buf: Float64Array, scratch: Float64Array, count: number): number {
+  for (let i = 0; i < count; i++) scratch[i] = buf[i];
+  for (let i = 1; i < count; i++) {
+    const v = scratch[i];
+    let j = i - 1;
+    while (j >= 0 && scratch[j] > v) {
+      scratch[j + 1] = scratch[j];
+      j--;
+    }
+    scratch[j + 1] = v;
+  }
+  return scratch[(count - 1) >> 1];
 }
 
 function centsToDeg(cents: number): number {
@@ -209,7 +249,15 @@ export function createTunerView(): ViewHandle {
   let angle = 0;
   let targetAngle = 0;
   let writtenAngle = Number.NaN;
+  /** The highpass cutoff in force, and the sub-band fence derived from it. */
+  let analysisFloorHz = 0;
+  let subBandHz = MIN_FREQ;
+  /** The last cutoff handed to the live capture, which is not always the one
+      above: a tuning change while getUserMedia is still pending updates the
+      fence with no capture to tell, and the capture learns of it afterwards. */
+  let micFloorHz = 0;
   let lastDetectAt = 0;
+  let detectHoldUntil = 0;
   let lastConfidentAt = 0;
   let inTuneStreak = 0;
   let inTune = false;
@@ -217,6 +265,25 @@ export function createTunerView(): ViewHandle {
   let lastVibeAt = -Infinity;
   let relaxed = true;
   let activeIdx = -1;
+
+  const recent = new Float64Array(MEDIAN_N);
+  const recentSorted = new Float64Array(MEDIAN_N);
+  let recentCount = 0;
+  let recentAt = 0;
+
+  /** Start the median over: nothing before this moment describes the pitch the
+      view is about to show (a new note, a new tuning, a new microphone). */
+  function clearMedian(): void {
+    recentCount = 0;
+    recentAt = 0;
+  }
+
+  function pushMedian(freq: number): number {
+    recent[recentAt] = freq;
+    recentAt = (recentAt + 1) % MEDIAN_N;
+    if (recentCount < MEDIAN_N) recentCount++;
+    return medianOf(recent, recentSorted, recentCount);
+  }
 
   const el = h('section', 'tv is-idle');
   el.setAttribute('aria-label', 'Auto tuner');
@@ -329,9 +396,43 @@ export function createTunerView(): ViewHandle {
     for (const pill of pills) strip.appendChild(pill);
   }
 
+  /** Tell the capture where the instrument starts, and remember what it did with
+      that — the fence below has to agree with the filter, not with the request.
+      Not simply the first entry: the ukulele's reentrant G leads its tuning but
+      its C is the lowest note. */
+  function applyAnalysisFloor(capture: MicCapture | null = mic): void {
+    let lowest = Infinity;
+    for (const note of targetNotes) {
+      if (note.freq < lowest) lowest = note.freq;
+    }
+    if (lowest === Infinity) return;
+    const want = lowest * ANALYSIS_FLOOR_RATIO;
+    const applied = capture ? capture.setAnalysisFloor(want) : clampAnalysisFloor(want);
+    if (capture) {
+      // Moving the cutoff under a RUNNING capture drags the phase of everything
+      // in the band with it, and a phase shift that is moving reads as a
+      // frequency offset — tens of cents, at a clarity high enough to reach the
+      // needle. The ramp is long enough to keep that small; this holds the
+      // display off until the analyser's window is clear of it altogether. The
+      // test is against what the capture was last told, not against the fence:
+      // only the capture knows whether its filter actually moved.
+      if (capture.running && applied !== micFloorHz) {
+        detectHoldUntil = performance.now() + capture.settleMs;
+      }
+      micFloorHz = applied;
+    }
+    if (applied === analysisFloorHz) return;
+    analysisFloorHz = applied;
+    subBandHz = Math.max(MIN_FREQ, applied * SUB_BAND_RATIO);
+  }
+
   function refreshTuning(): void {
     targetNotes = tuningNotes(tuningById(state.tuningId), state.a4);
     renderStrip();
+    // Readings taken through the old band, against the old targets, say nothing
+    // about the new ones.
+    clearMedian();
+    applyAnalysisFloor();
   }
 
   /* The dwell floor is not consulted here: relaxing means HOLD_MS (600 ms) has
@@ -342,6 +443,7 @@ export function createTunerView(): ViewHandle {
     relaxed = true;
     targetAngle = 0;
     inTuneStreak = 0;
+    clearMedian();
     setInTune(false, now);
     setIdleVisual(true);
     setActiveString(-1);
@@ -405,13 +507,18 @@ export function createTunerView(): ViewHandle {
   function tick(now: number): void {
     rafId = requestAnimationFrame(tick);
 
-    if (mic && detector && frame && now - lastDetectAt >= DETECT_MS) {
+    if (mic && detector && frame && now - lastDetectAt >= DETECT_MS && now >= detectHoldUntil) {
       lastDetectAt = now;
       mic.read(frame);
-      const result = detector.detect(frame);
+      const raw = detector.detect(frame);
+      const result = raw && raw.freq >= subBandHz ? raw : null;
       if (result) {
         lastConfidentAt = now;
-        applyPitch(result.freq, now);
+        // Everything downstream — readout, needle, string pick, the in-tune
+        // latch — reads the median, never the raw frame: one bad detection in
+        // five now costs nothing at all instead of a visible needle jump that
+        // the smoothing then takes a quarter of a second to walk back.
+        applyPitch(pushMedian(result.freq), now);
       } else if (lastConfidentAt === 0 || now - lastConfidentAt > HOLD_MS) {
         relax(false, now);
       }
@@ -446,6 +553,11 @@ export function createTunerView(): ViewHandle {
     setPhase('starting');
     try {
       const capture = new MicCapture();
+      // Before the graph exists, so the highpass is BUILT at the tuning's cutoff
+      // instead of being ramped there a moment after audio starts flowing: that
+      // ramp used to fire on every single mic start, and a string already
+      // ringing when it fired read tens of cents sharp for the first few frames.
+      applyAnalysisFloor(capture);
       await capture.start();
       // Reaching here means getUserMedia resolved, so the grant is real even if
       // the user switched tabs while the permission prompt was up.
@@ -456,10 +568,23 @@ export function createTunerView(): ViewHandle {
         return;
       }
       mic = capture;
-      detector = new PitchDetector(capture.sampleRate, capture.bufferSize);
-      frame = new Float32Array(capture.bufferSize);
+      // The detector is built for the stream as it will be READ — decimated on
+      // a 96 kHz interface — and told how often it will be called, which is the
+      // only clock it has for its own memory.
+      detector = new PitchDetector(capture.analysisRate, capture.analysisSize, DETECT_MS);
+      frame = new Float32Array(capture.analysisSize);
       lastDetectAt = 0;
+      // The analyser was created full of silence and hands that back until a
+      // whole frame of real audio has arrived. The step out of it is a transient
+      // with a confident, wrong pitch in it, so wait the frame out.
+      detectHoldUntil = performance.now() + capture.frameMs;
       lastConfidentAt = 0;
+      // A new stream is a new room as far as the gate is concerned. The band was
+      // set before the graph was built; this catches a tuning change that landed
+      // while the permission prompt was up.
+      detector.reset();
+      clearMedian();
+      applyAnalysisFloor();
       // Tuning is a hands-on, screen-watching job: nothing touches the display
       // between plucks, so hold the screen awake for as long as the mic is open.
       holdWake('tuner');
@@ -489,6 +614,10 @@ export function createTunerView(): ViewHandle {
     releaseWake('tuner');
     detector = null;
     frame = null;
+    detectHoldUntil = 0;
+    // The next capture is a new filter, built from scratch at whatever cutoff
+    // the tuning then wants.
+    micFloorHz = 0;
     if (phase === 'live' || phase === 'starting') setPhase('idle');
     relax(true);
   }

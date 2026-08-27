@@ -306,3 +306,36 @@ Selecting a since-deleted custom tuning falls back to standard on next load. tun
 ### Quality bar (unchanged, plus)
 - No flashing, anywhere — every new indicator is a static state change or continuous motion.
 - npm run build clean; layouts verified at 375x812, 375x667, 320x640, 812x375, 1280x800; keyboard operable; aria-pressed on all toggles; 44 px targets; AA contrast.
+
+
+## v1.3 — Noise robustness (adaptive gate, pre-filters, median + continuity)
+
+Goal: keep today's accuracy in quiet rooms and stop the tuner from "hearing" pitch in HVAC/traffic/chatter between plucks, without ML, added latency, or weight.
+
+### src/audio/mic.ts — analysis pre-filters
+- Graph becomes: source -> highpass biquad (Q 0.707) -> lowpass biquad (2000 Hz, Q 0.707) -> analyser. Frame sizing stays keyed to the global 28 Hz floor (no mic restart on tuning change).
+- New method: `setAnalysisFloor(hz: number): number` — sets the highpass cutoff, clamped to 20-90 Hz, and RETURNS the applied (clamped) value; callable before start (stored and applied at graph build — callers set it before `start()` so no ramp ever runs at mic open) or while running (applies via a frequency ramp of RAMP_S = 0.5 s — a fast ramp is a frequency modulator that reads as tens of cents of high-confidence error). `settleMs` exposes ramp + one frame; the view holds detection off that long after a live change. Default 20 Hz until a caller sets it. When the context rate exceeds 48 kHz the capture decimates the analysis stream to <= 48 kHz (`analysisRate`/`analysisSize`; alias-safe because of the 2 kHz lowpass) and the detector is constructed with those.
+- Callers pass ~0.85 x the lowest string frequency of the SELECTED tuning (tuner view recomputes on tuning/a4 change; clamp handles bass B0 -> ~26 Hz -> clamps to 20-26 region fine).
+
+### src/audio/pitch.ts — adaptive gate + continuity bias (stays pure DSP, same constructor/detect signatures)
+- **Adaptive noise gate**, two estimators:
+  - Fast floor, unpitched frames only: drops immediately to a quieter background; rises capped UNCONDITIONALLY at `min(rms, floor * GATE_MARGIN)` per frame (~10 dB/s) so a decaying note that fails clarity once can never hand the gate its own level (the uncapped rise was a shipped critical bug: a rejected frame pinned the gate 8 dB above the ringing string for its whole decay). Accept a frame only when `rms >= max(MIN_RMS_ABS, floor * GATE_MARGIN)`, MIN_RMS_ABS = 0.003, GATE_MARGIN = 2.5.
+  - Slow background tracker, fed by EVERY frame (pitched too), so a periodic background (hum, fan whine) that the pitch path accepts can still be identified and gated. It arms only when the room 'holds still' (p90/p10 of a 43 ms tail envelope over 2 s <= 1.20 — hum measures ~1.1, tremolo >= 1.25, plucks >= 2) AND the fast floor has been starved of unpitched frames for 5 s. Consequence: hum alone may be reported for up to ~5 s after mic start, then never again; no plucked or played note can trip it (verified against plucks with t60 up to 14 s, tremolo, and steady tones over a measured room).
+- **Continuity bias in key-maximum picking**: keep k = 0.9. Among key maxima whose nsdf value >= k * best, prefer the candidate whose implied frequency is within +-150 cents of the last confident frequency, guarded to within an octave of the plain rule's answer (unguarded, one phantom frame re-elects itself indefinitely). The memory expires after 1.5 s of wall-clock unpitched time: the constructor takes `detectIntervalMs` (default 25) so the frame count is honest about how often the view actually calls detect(). When no candidate is near the memory, fall back to the first-qualifying-peak rule. Verified not to regress the octave traps (missing fundamental, dominant 2nd harmonic), including with the memory deliberately primed an octave off.
+- Add `reset(): void` clearing the floor estimate and continuity memory; MicCapture callers invoke it on mic start.
+
+### src/ui/tuner-view.ts — median before smoothing
+- Keep a rolling buffer of the last 5 confident detections; the frequency used for the readout, needle target, nearest-string pick and the in-tune latch is the MEDIAN of that buffer (buffer cleared on relax/idle and on tuning change). The existing EMA/latch/hysteresis stay, now fed by the median.
+- Call `capture.setAnalysisFloor(...)` BEFORE `await capture.start()` (so the graph opens at the right cutoff, no ramp) and again on tuning/a4 changes; hold detection for `capture.settleMs` after a live change; call `detector.reset()` when the mic (re)starts.
+- **Sub-band fence**: detections below `0.8 x the APPLIED highpass cutoff` (the return value of setAnalysisFloor — not the requested value, which the 90 Hz clamp may have reduced for ukulele/mandolin) are treated as no-detection; the fence never rises above what MIN_FREQ already enforces.
+
+### Verification bar (the build must prove these in a scratchpad harness)
+1. Quiet-room accuracy unchanged: existing synthetic-string suite still passes (<=0.5 cent, all presets' strings, 44.1/48/96 kHz).
+2. Pink noise at SNR 20/10/6 dB under a decaying pluck: detection rate during the sustain >= 90% at 10 dB; between plucks (noise only, >= 5 s) the false-confident rate is 0 after the gate adapts (first ~1 s may pass a handful).
+3. 60 Hz hum + first 3 harmonics at -10 dB relative: with the guitar floor (70 Hz HPF modelled as a 2nd-order butterworth in the harness) the detector never reports the hum while a string sounds, and never reports at all with hum alone.
+4. Sympathetic resonance: target string plus a neighbour string at -10 dB starting mid-sustain: the reported pitch stays on the target (no frame jumps to the neighbour or a harmonic).
+5. The tuner view median rejects a single injected outlier frame (needle target moves < 1 cent when 1 of 5 frames is off by 30 cents).
+
+### Documented limitations (accepted trade-offs, v1.3)
+- A tone that fades in from under the opening gate and rises slower than the fast floor's chase (~2-8 dB/s) is not detected. Plucked and struck notes always open with a transient well above the gate, so no supported instrument hits this; bowed/swelled sources would.
+- A synthesised tone held at a perfectly constant level for > 5 s in a room that has been silent since mic start is eventually classified as background. No physical string can do this (they decay); it matters only when tuning to another device's test tone through the mic.
