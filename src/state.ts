@@ -1,17 +1,27 @@
-// Tiny persisted app store: current tuning selection + A4 calibration.
+// Tiny persisted app store: current tuning selection + A4 calibration + capo.
 
 export interface AppState {
   tuningId: string;
   a4: number;
+  /** Capo fret, 0-12. Transposes every tuner/manual target up by this many semitones. */
+  capo: number;
 }
 
 const STORAGE_KEY = 'truestring:v1';
-const DEFAULT_STATE: AppState = { tuningId: 'standard', a4: 440 };
+const DEFAULT_STATE: AppState = { tuningId: 'standard', a4: 440, capo: 0 };
 const A4_MIN = 415;
 const A4_MAX = 466;
+const CAPO_MIN = 0;
+const CAPO_MAX = 12;
 
 function clampA4(a4: number): number {
   return Math.min(A4_MAX, Math.max(A4_MIN, a4));
+}
+
+/** Frets are whole numbers — a fractional capo would name notes it cannot sound. */
+function clampCapo(capo: number): number {
+  if (!Number.isFinite(capo)) return DEFAULT_STATE.capo;
+  return Math.min(CAPO_MAX, Math.max(CAPO_MIN, Math.round(capo)));
 }
 
 function loadState(): AppState {
@@ -25,7 +35,12 @@ function loadState(): AppState {
       typeof parsed?.a4 === 'number' && Number.isFinite(parsed.a4)
         ? clampA4(parsed.a4)
         : DEFAULT_STATE.a4;
-    return { tuningId, a4 };
+    // Blobs written before v1.5 have no capo at all — those players get 0.
+    const capo =
+      typeof parsed?.capo === 'number' && Number.isFinite(parsed.capo)
+        ? clampCapo(parsed.capo)
+        : DEFAULT_STATE.capo;
+    return { tuningId, a4, capo };
   } catch {
     return { ...DEFAULT_STATE };
   }
@@ -50,6 +65,9 @@ export function setState(partial: Partial<AppState>): void {
   const next: AppState = { ...state, ...partial };
   if (partial.a4 !== undefined) {
     next.a4 = clampA4(next.a4);
+  }
+  if (partial.capo !== undefined) {
+    next.capo = clampCapo(next.capo);
   }
   state = next;
   persist(state);

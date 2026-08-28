@@ -5,9 +5,11 @@ import { getState, setState, subscribe } from './state';
 import type { Tuning, TuningGroup } from './music/tunings';
 import {
   allTunings,
+  capoLimit,
   deleteCustomTuning,
   noteName,
   saveCustomTuning,
+  stringCents,
   tuningById,
 } from './music/tunings';
 import { createTunerView } from './ui/tuner-view';
@@ -42,6 +44,11 @@ const STRINGS_MIN = 4;
 const STRINGS_MAX = 8;
 const MIDI_MIN = 23;
 const MIDI_MAX = 81;
+/** Per-string sweetening, in cents either side of equal temperament. */
+const CENTS_MIN = -50;
+const CENTS_MAX = 50;
+/** Twelfth fret is where the neck runs out of usable capo positions. */
+const CAPO_MAX = 12;
 /** Delete asks twice; the armed button falls back to its label after this long. */
 const DELETE_ARM_MS = 3500;
 
@@ -184,6 +191,7 @@ root.innerHTML = `
         <button type="button" class="chip" id="tuning-chip" aria-haspopup="dialog" aria-expanded="false">
           <span class="sr-only">Tuning:</span>
           <span class="chip-label" id="tuning-label">Standard E</span>
+          <span class="chip-capo" id="chip-capo" hidden></span>
           <span class="chip-caret">${ICONS.caret}</span>
         </button>
         <button type="button" class="icon-btn" id="gear-btn" aria-haspopup="dialog" aria-expanded="false" aria-label="Reference pitch settings">${ICONS.gear}</button>
@@ -215,6 +223,14 @@ root.innerHTML = `
       <button type="button" class="icon-btn" id="sheet-close" aria-label="Close tuning list">${ICONS.close}</button>
     </div>
     <p class="sheet-note" id="sheet-note" role="status"></p>
+    <div class="capo-row" id="capo-row">
+      <span class="capo-label">Capo</span>
+      <div class="capo-stepper" role="group" aria-label="Capo fret">
+        <button type="button" class="icon-btn" id="capo-dec" aria-label="Move the capo down a fret">${ICONS.minus}</button>
+        <span class="capo-value" id="capo-value" aria-live="polite">None</span>
+        <button type="button" class="icon-btn" id="capo-inc" aria-label="Move the capo up a fret">${ICONS.plus}</button>
+      </div>
+    </div>
     <div class="sheet-list" id="tuning-list"></div>
     <form class="editor" id="tuning-editor" hidden>
       <div class="editor-scroll" id="editor-scroll">
@@ -244,9 +260,11 @@ root.innerHTML = `
 `;
 
 const appFrame = q('#app-frame');
+const appHeader = q('.app-header');
 const viewRoot = q('#view-root');
 const tuningChip = q<HTMLButtonElement>('#tuning-chip');
 const tuningLabel = q('#tuning-label');
+const chipCapo = q('#chip-capo');
 const gearBtn = q<HTMLButtonElement>('#gear-btn');
 const popover = q('#a4-popover');
 const a4Value = q('#a4-value');
@@ -258,6 +276,10 @@ const sheet = q('#tuning-sheet');
 const sheetTitle = q('#tuning-sheet-title');
 const sheetClose = q<HTMLButtonElement>('#sheet-close');
 const sheetNote = q('#sheet-note');
+const capoRow = q('#capo-row');
+const capoValue = q('#capo-value');
+const capoDec = q<HTMLButtonElement>('#capo-dec');
+const capoInc = q<HTMLButtonElement>('#capo-inc');
 const tuningList = q('#tuning-list');
 const editorForm = q<HTMLFormElement>('#tuning-editor');
 const editorScroll = q('#editor-scroll');
@@ -348,6 +370,27 @@ let sheetMode: SheetMode = 'list';
 /** The list's primary rows: one per tuning, then the "New tuning" row. */
 let rowButtons: HTMLButtonElement[] = [];
 
+/** House spelling for a signed offset — "0¢", "+3¢", "−6¢" (U+2212, matching
+    the tuner's readout, which is the other place a player reads cents). */
+function centsText(cents: number): string {
+  if (cents === 0) return '0¢';
+  return `${cents > 0 ? '+' : '−'}${Math.abs(cents)}¢`;
+}
+
+/**
+ * The offsets of a sweetened tuning as one line, or "" when every string sits on
+ * equal temperament. Read per string rather than off `t.cents` so a stored array
+ * that is short, long or absent still lines up with the strings it describes —
+ * and so customs get the same line the factory presets do.
+ */
+function centsLine(t: Tuning): string {
+  const cents = t.midis.map((_, i) => stringCents(t, i));
+  if (!cents.some((c) => c !== 0)) return '';
+  const parts = cents.map((c) => (c === 0 ? '0' : c > 0 ? `+${c}` : `−${-c}`));
+  // Non-breaking before the unit: a "¢" alone on the next line reads as a typo.
+  return `${parts.join(' ')} ¢`;
+}
+
 function sectionHead(group: TuningGroup): HTMLElement {
   const head = document.createElement('p');
   head.className = 'sheet-section';
@@ -368,6 +411,16 @@ function tuningRow(tuning: Tuning, currentId: string): HTMLElement {
   text.className = 'sheet-item-text';
   text.append(name, detail);
 
+  // A sweetened tuning looks identical to its plain twin on the note names
+  // alone, so the offsets get their own quiet line under them.
+  const offsets = centsLine(tuning);
+  if (offsets !== '') {
+    const cents = document.createElement('span');
+    cents.className = 'sheet-item-cents';
+    cents.textContent = offsets;
+    text.append(cents);
+  }
+
   const check = document.createElement('span');
   check.className = 'sheet-item-check';
   check.innerHTML = ICONS.check;
@@ -379,7 +432,7 @@ function tuningRow(tuning: Tuning, currentId: string): HTMLElement {
   if (tuning.id === currentId) item.setAttribute('aria-current', 'true');
   item.append(text, check);
   item.addEventListener('click', () => {
-    setState({ tuningId: tuning.id });
+    updateState({ tuningId: tuning.id });
     closeSheet();
   });
   rowButtons.push(item);
@@ -438,10 +491,16 @@ interface StringRow {
   note: HTMLElement;
   dec: HTMLButtonElement;
   inc: HTMLButtonElement;
+  cents: HTMLElement;
+  fine: HTMLElement;
+  fineDec: HTMLButtonElement;
+  fineInc: HTMLButtonElement;
 }
 
 let editorId: string | null = null;
 let editorMidis: number[] = [];
+/** Per-string sweetening, index-aligned with editorMidis. */
+let editorCents: number[] = [];
 let stringRows: StringRow[] = [];
 let editorReturnFocus: HTMLElement | null = null;
 let deleteArmed = false;
@@ -451,6 +510,10 @@ const refreshEditorFade = fadeOnOverflow(editorScroll, [editorStrings]);
 
 function clampMidi(midi: number): number {
   return clamp(Math.round(midi), MIDI_MIN, MIDI_MAX);
+}
+
+function clampCents(cents: number): number {
+  return Number.isFinite(cents) ? clamp(Math.round(cents), CENTS_MIN, CENTS_MAX) : 0;
 }
 
 /** Disabling the focused button would drop focus to <body> and break the
@@ -471,6 +534,13 @@ function stepButton(icon: string, step: () => void): HTMLButtonElement {
   return btn;
 }
 
+/**
+ * One string: its note on the first line, its sweetening on the second. Both
+ * lines are built either way — four 44px targets, two readouts and two labels do
+ * not fit across a 320px sheet, and a target that has to shrink to fit is the
+ * wrong thing to give up — and the stylesheet lays them side by side from 360px
+ * up, where they do fit.
+ */
 function buildStringRows(): void {
   editorStrings.textContent = '';
   stringRows = editorMidis.map((_, i) => {
@@ -488,11 +558,37 @@ function buildStringRows(): void {
     stepper.className = 'editor-stepper';
     stepper.append(dec, note, inc);
 
+    const head = document.createElement('div');
+    head.className = 'editor-string-line';
+    head.append(name, stepper);
+
+    const fineName = document.createElement('span');
+    fineName.className = 'editor-fine-name';
+    fineName.textContent = 'Fine tune';
+
+    const cents = document.createElement('span');
+    cents.className = 'editor-cents';
+    cents.setAttribute('aria-live', 'polite');
+
+    const fineDec = stepButton(ICONS.minus, () => nudgeCents(i, -1));
+    const fineInc = stepButton(ICONS.plus, () => nudgeCents(i, 1));
+
+    // The pair carries the "in cents" part of the label so neither button has to
+    // repeat it, and a screen reader reads the group before either one.
+    const fine = document.createElement('div');
+    fine.className = 'editor-stepper editor-stepper-fine';
+    fine.setAttribute('role', 'group');
+    fine.append(fineDec, cents, fineInc);
+
+    const fineLine = document.createElement('div');
+    fineLine.className = 'editor-string-line editor-string-fine';
+    fineLine.append(fineName, fine);
+
     const row = document.createElement('div');
-    row.className = 'editor-row';
-    row.append(name, stepper);
+    row.className = 'editor-row editor-string';
+    row.append(head, fineLine);
     editorStrings.append(row);
-    return { name, note, dec, inc };
+    return { name, note, dec, inc, cents, fine, fineDec, fineInc };
   });
 }
 
@@ -503,12 +599,26 @@ function nudgeString(i: number, delta: number): void {
   syncEditor();
 }
 
+function nudgeCents(i: number, delta: number): void {
+  const next = clampCents(editorCents[i] + delta);
+  if (next === editorCents[i]) return;
+  editorCents[i] = next;
+  syncEditor();
+}
+
 function setStringCount(next: number): void {
   const count = clamp(next, STRINGS_MIN, STRINGS_MAX);
   if (count === editorMidis.length) return;
   // Growing copies the last string, shrinking drops it — the highest either way.
-  while (editorMidis.length < count) editorMidis.push(editorMidis[editorMidis.length - 1]);
-  while (editorMidis.length > count) editorMidis.pop();
+  // A copied string brings its sweetening with it: it is the same string twice.
+  while (editorMidis.length < count) {
+    editorMidis.push(editorMidis[editorMidis.length - 1]);
+    editorCents.push(editorCents[editorCents.length - 1] ?? 0);
+  }
+  while (editorMidis.length > count) {
+    editorMidis.pop();
+    editorCents.pop();
+  }
   buildStringRows();
   syncEditor();
 }
@@ -522,25 +632,52 @@ function syncEditor(): void {
   for (let i = 0; i < stringRows.length; i++) {
     const row = stringRows[i];
     const midi = editorMidis[i];
+    const cents = editorCents[i];
     // Strings are stored low → high and numbered the way a player counts them,
     // so the lowest string carries the highest number.
     const ordinal = count - i;
     setText(row.name, `String ${ordinal}`);
     setText(row.note, noteName(midi));
+    setText(row.cents, centsText(cents));
+    row.cents.classList.toggle('is-on', cents !== 0);
     row.dec.setAttribute('aria-label', `Lower string ${ordinal} a semitone`);
     row.inc.setAttribute('aria-label', `Raise string ${ordinal} a semitone`);
+    row.fine.setAttribute('aria-label', `Fine tune string ${ordinal} in cents`);
+    row.fineDec.setAttribute('aria-label', `Lower string ${ordinal} a cent`);
+    row.fineInc.setAttribute('aria-label', `Raise string ${ordinal} a cent`);
     setStepDisabled(row.dec, midi <= MIDI_MIN, row.inc);
     setStepDisabled(row.inc, midi >= MIDI_MAX, row.dec);
+    setStepDisabled(row.fineDec, cents <= CENTS_MIN, row.fineInc);
+    setStepDisabled(row.fineInc, cents >= CENTS_MAX, row.fineDec);
   }
 
-  setText(editorPreview, editorMidis.map(noteName).join(' '));
+  setText(editorPreview, previewText());
   refreshEditorFade();
+}
+
+/**
+ * The tuning as one line: note names, each with its offset when it has one.
+ * A sweetened string is two words where the others are one, so the separator
+ * widens to keep "B3 −6¢" reading as a single entry — and a tuning with no
+ * offsets at all prints exactly the plain note list it always did.
+ */
+function previewText(): string {
+  const sweetened = editorCents.some((c) => c !== 0);
+  const parts = editorMidis.map((midi, i) => {
+    const cents = editorCents[i];
+    return cents === 0 ? noteName(midi) : `${noteName(midi)} ${centsText(cents)}`;
+  });
+  return parts.join(sweetened ? ' ' : ' ');
 }
 
 function setSheetMode(mode: SheetMode): void {
   sheetMode = mode;
   const editing = mode === 'editor';
   tuningList.hidden = editing;
+  // The capo belongs to the instrument, not to the tuning being written down:
+  // it has nothing to say on the editor screen and would only invite the player
+  // to bake the transposition into their custom.
+  capoRow.hidden = editing;
   editorForm.hidden = !editing;
   // A note belongs to the screen that raised it; every switch is a fresh one.
   setText(sheetNote, '');
@@ -565,8 +702,12 @@ function openEditor(tuning: Tuning | null): void {
   const source = tuning ?? tuningById(getState().tuningId);
   editorName.value = tuning ? tuning.name : NAME_FALLBACK;
   editorMidis = source.midis.slice(0, STRINGS_MAX).map(clampMidi);
+  // Read per string, so a source whose offsets are absent, short or long still
+  // hands the editor one number per string it is about to show.
+  editorCents = editorMidis.map((_, i) => clampCents(stringCents(source, i)));
   while (editorMidis.length < STRINGS_MIN) {
     editorMidis.push(editorMidis[editorMidis.length - 1] ?? MIDI_MIN);
+    editorCents.push(editorCents[editorCents.length - 1] ?? 0);
   }
   disarmDelete();
   editorDelete.hidden = editorId === null;
@@ -590,10 +731,18 @@ function backToList(target: HTMLElement | null): void {
 
 function saveEditor(): void {
   const name = editorName.value.trim().slice(0, NAME_MAX) || NAME_FALLBACK;
-  const saved = saveCustomTuning({ id: editorId ?? undefined, name, midis: [...editorMidis] });
+  // An untouched tuning stores no offsets at all, so a custom made the way every
+  // custom was made before v1.5 is written exactly as it was before v1.5.
+  const cents = editorCents.some((c) => c !== 0) ? [...editorCents] : undefined;
+  const saved = saveCustomTuning({
+    id: editorId ?? undefined,
+    name,
+    midis: [...editorMidis],
+    cents,
+  });
   // Always setState, even when the id is unchanged: an edited tuning has to
   // reach the views that are showing its note names.
-  setState({ tuningId: saved.id });
+  updateState({ tuningId: saved.id });
   closeSheet();
 }
 
@@ -611,7 +760,7 @@ function removeEditing(): void {
   const gone = tuningById(id).name;
   const wasInUse = getState().tuningId === id;
   deleteCustomTuning(id);
-  if (wasInUse) setState({ tuningId: 'standard' });
+  if (wasInUse) updateState({ tuningId: 'standard' });
   renderList();
   const current = wasInUse
     ? (rowButtons.find((item) => item.getAttribute('aria-current') === 'true') ?? null)
@@ -634,6 +783,56 @@ editorDelete.addEventListener('click', removeEditing);
 editorName.addEventListener('input', disarmDelete);
 attachRepeat(editorCountDec, () => setStringCount(editorMidis.length - 1));
 attachRepeat(editorCountInc, () => setStringCount(editorMidis.length + 1));
+
+/* ---------- capo ---------- */
+
+/** How far the capo may go on the instrument in force: twelve frets, or the
+    fret where the top string would cross the pitch detector's ceiling —
+    whichever comes first (see capoLimit). Past that the strip would name a
+    target the tuner cannot hear, and the guide would ask for it forever. */
+function capoCeiling(tuningId: string, a4: number): number {
+  return Math.min(CAPO_MAX, capoLimit(tuningById(tuningId), a4));
+}
+
+/** Every write that can move a target out of the tuner's reach goes through
+    here, so a fret can never outlive the instrument it was set on: picking the
+    mandolin (or calibrating up to A4 466) with a high capo brings the capo down
+    with it, which the sheet's own readout, the header chip and both CAPO tags
+    say at once. Keeping the fret instead would leave the top string silently
+    unhearable, which is the defect this replaces — and clamping only inside the
+    note math would be worse still: it would name one pitch and target another. */
+function updateState(partial: Partial<AppState>): void {
+  const current = getState();
+  const ceiling = capoCeiling(partial.tuningId ?? current.tuningId, partial.a4 ?? current.a4);
+  setState({ ...partial, capo: Math.min(partial.capo ?? current.capo, ceiling) });
+}
+
+/** Changing the capo leaves the sheet open: it is a setting the player adjusts
+    against the list, not a choice that ends the visit. */
+function nudgeCapo(delta: number): void {
+  const { capo, tuningId, a4 } = getState();
+  const next = clamp(capo + delta, 0, capoCeiling(tuningId, a4));
+  if (next !== capo) setState({ capo: next });
+}
+
+function renderCapo(capo: number, ceiling: number): void {
+  setText(capoValue, capo === 0 ? 'None' : `Fret ${capo}`);
+  capoValue.classList.toggle('is-on', capo > 0);
+  setStepDisabled(capoDec, capo <= 0, capoInc);
+  setStepDisabled(capoInc, capo >= ceiling, capoDec);
+}
+
+attachRepeat(capoDec, () => nudgeCapo(-1));
+attachRepeat(capoInc, () => nudgeCapo(1));
+
+// A blob written on another instrument can carry a fret this one cannot reach —
+// capo 12 saved on a guitar, reopened on the mandolin. Bring it back into range
+// before the first paint rather than opening deaf.
+{
+  const { tuningId, a4, capo } = getState();
+  const ceiling = capoCeiling(tuningId, a4);
+  if (capo > ceiling) setState({ capo: ceiling });
+}
 
 /* ---------- sheet open / close ---------- */
 
@@ -686,11 +885,17 @@ function closeSheet(): void {
 }
 
 /** Everything tabbable in the sheet, in DOM order: the close button plus the
-    controls of whichever panel is showing. */
+    controls of whichever panel is showing — the capo row counts as part of the
+    list, which is where it sits and where it is shown. */
 function sheetFocusables(): HTMLElement[] {
-  const panel = sheetMode === 'editor' ? editorForm : tuningList;
-  const controls = panel.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])');
-  return [sheetClose, ...Array.from(controls).filter((node) => !node.hidden)];
+  const panels = sheetMode === 'editor' ? [editorForm] : [capoRow, tuningList];
+  const controls: HTMLElement[] = [];
+  for (const panel of panels) {
+    controls.push(
+      ...panel.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'),
+    );
+  }
+  return [sheetClose, ...controls.filter((node) => !node.hidden)];
 }
 
 function handleSheetKeys(e: KeyboardEvent): void {
@@ -715,6 +920,9 @@ function handleSheetKeys(e: KeyboardEvent): void {
     return;
   }
   if (sheetMode !== 'list') return; // arrows belong to the editor's own fields
+  // The capo stepper is not a list row; arrows there would fling focus into the
+  // list from a control the player is in the middle of using.
+  if (active instanceof Node && capoRow.contains(active)) return;
   if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
   e.preventDefault();
   const index = rowButtons.findIndex((item) => item === active);
@@ -751,7 +959,7 @@ function closePopover(restoreFocus = false): void {
 
 function nudgeA4(delta: number): void {
   const next = Math.min(A4_MAX, Math.max(A4_MIN, Math.round(getState().a4) + delta));
-  if (next !== getState().a4) setState({ a4: next });
+  if (next !== getState().a4) updateState({ a4: next });
 }
 
 gearBtn.addEventListener('click', () => {
@@ -761,7 +969,7 @@ gearBtn.addEventListener('click', () => {
 a4Dec.addEventListener('click', () => nudgeA4(-1));
 a4Inc.addEventListener('click', () => nudgeA4(1));
 a4Reset.addEventListener('click', () => {
-  if (getState().a4 !== A4_DEFAULT) setState({ a4: A4_DEFAULT });
+  if (getState().a4 !== A4_DEFAULT) updateState({ a4: A4_DEFAULT });
 });
 
 popover.addEventListener('focusout', (e) => {
@@ -794,7 +1002,15 @@ document.addEventListener('keydown', (e) => {
 /* ---------- state binding ---------- */
 
 function render(state: AppState): void {
-  tuningLabel.textContent = tuningById(state.tuningId).name;
+  setText(tuningLabel, tuningById(state.tuningId).name);
+  // A capo silently retunes every target in the app, so the chip that names the
+  // tuning names the capo too — the one label that is on screen at all times.
+  const capo = clamp(state.capo, 0, CAPO_MAX);
+  setText(chipCapo, capo > 0 ? `capo ${capo}` : '');
+  chipCapo.hidden = capo === 0;
+  appHeader.classList.toggle('has-capo', capo > 0);
+  renderCapo(capo, capoCeiling(state.tuningId, state.a4));
+
   a4Value.textContent = String(state.a4);
 
   const decOff = state.a4 <= A4_MIN;

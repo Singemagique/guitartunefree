@@ -275,6 +275,7 @@ body::after {
 .chip {
   position: relative;
   display: inline-flex;
+  min-width: 0;
   align-items: center;
   gap: 5px;
   min-height: 36px;
@@ -456,17 +457,27 @@ body::after {
   backdrop-filter: blur(14px) saturate(140%);
 }
 
+/* Base 0, not auto: the chip asks for the width it needs first and the app's own
+   name takes what is left over, so the name is always the one that ellipsizes.
+   A shrink ratio cannot express that — flexbox splits a deficit between the two
+   in proportion, and even a hundredth of a pixel taken off the chip's label
+   costs it two whole characters to the ellipsis. */
 .wordmark {
   display: flex;
+  flex: 1 1 0;
+  /* The glyph's own width: the mark shortens to its fork before the chip gives
+     up anything, and never shrinks past it into the chip. (Automatic would be
+     min-content — "TrueString" is one unbreakable word, which would floor the
+     mark at its full width and hand the whole deficit to the chip instead.) */
+  min-width: 22px;
   align-items: center;
   gap: 9px;
-  margin-right: auto;
-  min-width: 0;
 }
 
 .wordmark-glyph {
   display: grid;
   place-items: center;
+  flex: 0 0 auto;
   width: 22px;
   height: 22px;
   color: var(--amber);
@@ -478,7 +489,13 @@ body::after {
   height: 22px;
 }
 
+/* The name of the app is the one thing on this row that says nothing about the
+   instrument, so it is the one that gives up room when the chip needs it. */
 .wordmark-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 17px;
   font-weight: 600;
   letter-spacing: 0.015em;
@@ -489,14 +506,53 @@ body::after {
 .header-actions {
   position: relative;
   display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
   align-items: center;
   gap: 2px;
 }
 
+/* The name gives up room only when the row has none left to give: a ch cap
+   truncates by the same number of characters on a 1280px desktop as on a 320px
+   phone, and the instrument is the half it throws away. The chain that makes
+   this work: the actions can shrink, the chip can shrink inside them, and the
+   label is the only part of the chip that ellipsizes — the capo never does. */
 .chip-label {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 12ch;
+}
+
+/* "Standard E · capo 3". A capo silently retunes every target in the app, so the
+   chip that names the tuning names the capo too — and the capo half never
+   truncates: it is the part the player cannot read off the strings in front of
+   them. The separator is drawn rather than written so speech gets "capo 3". */
+.chip-capo {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  color: var(--amber);
+  font-variant-numeric: tabular-nums;
+}
+
+.chip-capo::before {
+  content: "·";
+}
+
+/* The gear keeps its target whatever the chip does. */
+#gear-btn {
+  flex: 0 0 auto;
+}
+
+/* Narrow enough that the wordmark, both halves of the chip and the gear cannot
+   all fit: the mark keeps its glyph and drops its text rather than letting three
+   labels ellipsize at once. */
+@media (max-width: 359px) {
+  .app-header.has-capo .wordmark-text {
+    display: none;
+  }
 }
 
 .chip-caret {
@@ -763,6 +819,56 @@ body.is-locked .view-root {
   border: 0;
 }
 
+/* The capo is not one of the tunings, so it sits above the sections rather than
+   inside them — and outside the scroller, because a setting you adjust while
+   reading the list must not be able to scroll off the top of it. */
+.capo-row {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 2px 8px;
+  padding: 3px 3px 3px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.capo-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.capo-stepper {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.26);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+/* Wide enough for "Fret 12" without the stepper resizing under the thumb. */
+.capo-value {
+  min-width: 7ch;
+  padding: 0 6px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* A clamped capo changes every target in the app; the readout says so in the
+   accent colour instead of blinking about it. */
+.capo-value.is-on {
+  color: var(--amber);
+}
+
 .sheet-list {
   display: flex;
   flex-direction: column;
@@ -773,8 +879,13 @@ body.is-locked .view-root {
   padding: 2px;
 }
 
+/* flex-shrink: 0 is load-bearing: the list always overflows, and an explicit
+   min-height overrides a flex item's automatic minimum size, so a row with a
+   third line (a sweetened tuning's offsets) would be squeezed back to 56px and
+   render its own text outside its border box. */
 .sheet-item {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 12px;
   width: 100%;
@@ -828,6 +939,20 @@ body.is-locked .view-root {
 
 /* The amber wash lifts the row background, so --muted would land under AA. */
 .sheet-item[aria-current="true"] .sheet-item-detail {
+  color: #a3adb6;
+}
+
+/* A sweetened tuning spells the same six letters as its plain twin, so the row
+   carries the offsets that actually tell them apart on a third, quieter line. */
+.sheet-item-cents {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.sheet-item[aria-current="true"] .sheet-item-cents {
   color: #a3adb6;
 }
 
@@ -1011,6 +1136,66 @@ body.is-locked .view-root {
   color: var(--text);
 }
 
+/* One string, two lines: its note on top, its sweetening under it. Side by side
+   they would be four 44px targets, two readouts and two labels across a 320px
+   sheet, and the target size is not the thing to give up for that. 320px is the
+   only width where that is true, though — from 360px up they go side by side,
+   see the bottom of this file. */
+.editor-string {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 2px 3px;
+}
+
+.editor-string-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  /* Puts the labels on the same left axis as the single-line rows above. */
+  padding-left: 11px;
+}
+
+.editor-fine-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* Same geometry as the note stepper so the two sets of buttons stack in a
+   straight column, one step quieter so it reads as the finer adjustment rather
+   than a second way to change the note. */
+.editor-stepper-fine {
+  border-color: transparent;
+  background: rgba(0, 0, 0, 0.14);
+  box-shadow: none;
+}
+
+/* Equal readout widths keep the two steppers the same width, so their buttons
+   stack in a straight column. In px, not ch: the two readouts are set at
+   different sizes, so a ch floor would come out different for each. 46px clears
+   the widest either shows — "A♯2" at 17px and "−50¢" at 15px. */
+.editor-string .editor-note,
+.editor-string .editor-cents {
+  min-width: 46px;
+}
+
+.editor-cents {
+  padding: 0 4px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+/* An offset that is doing something is worth spotting on the way down the list;
+   an untouched "0¢" stays quiet. A static colour, nothing that moves. */
+.editor-cents.is-on {
+  color: var(--amber);
+}
+
 /* Pinned between the scroll box and the actions: the tuning you are building and
    the one destructive control, both out of the scroller so neither can be
    scrolled off the screen that owns them. */
@@ -1081,6 +1266,53 @@ body.is-locked .view-root {
 
   .editor-preview {
     padding: 7px 12px;
+  }
+
+  /* Landscape has no height to spare, so the gaps between rows close up — the
+     rows themselves keep their 44px targets. */
+  .editor-scroll {
+    gap: 5px;
+  }
+
+  .editor-strings {
+    gap: 4px;
+  }
+
+  .capo-row {
+    margin-bottom: 6px;
+  }
+}
+
+/* Wherever the width is there, the string's two lines sit side by side, which
+   halves the row and doubles how many strings the scroller can show at once — an
+   8-string custom is the case that needs it, and it is the same case in portrait
+   as in landscape. 360px is where they fit: at 320 the note stepper overflows
+   its line and collides with the cents stepper, so that width keeps the stack.
+   The "Fine tune" wording goes with the second line — the ¢ in the readout says
+   what the stepper is, and the group keeps its full spoken label. */
+@media (min-width: 360px) {
+  .editor-string {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 3px 3px 14px;
+  }
+
+  .editor-string-line {
+    padding-left: 0;
+  }
+
+  .editor-string-line:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .editor-string-fine {
+    flex: 0 0 auto;
+  }
+
+  .editor-fine-name {
+    display: none;
   }
 }
 

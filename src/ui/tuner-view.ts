@@ -425,10 +425,16 @@ export function createTunerView(): ViewHandle {
   const strings = h('div', 'tv-strings');
   const stringsHead = h('div', 'tv-strings-head');
   const stringsTitle = h('p', 'tv-strings-title', 'Strings');
+  /* A capo rewrites every name on the strip — the low E pill reads F♯2 with one
+     at the second fret — so the strip says so, in the row that labels it. Static
+     in both senses: it appears and disappears with the setting and never moves,
+     and the text is only ever rewritten when the fret changes. */
+  const capoTag = h('span', 'tv-capo');
+  capoTag.hidden = true;
   const guideBtn = h('button', 'btn btn-ghost tv-guide', 'Tune all');
   guideBtn.type = 'button';
   guideBtn.setAttribute('aria-pressed', 'false');
-  stringsHead.append(stringsTitle, guideBtn);
+  stringsHead.append(stringsTitle, capoTag, guideBtn);
   const strip = h('div', 'tv-strip');
   strip.setAttribute('role', 'list');
   strip.setAttribute('aria-label', 'Target strings');
@@ -748,22 +754,49 @@ export function createTunerView(): ViewHandle {
     subBandHz = Math.max(MIN_FREQ, applied * SUB_BAND_RATIO);
   }
 
+  /** The capo tag. Written only when there is a fret to name, so the hidden
+      element never carries a stale "Capo 3" for a screen reader to find. */
+  function syncCapo(): void {
+    const capo = state.capo;
+    if (capo > 0) setText(capoTag, `Capo ${capo}`);
+    capoTag.hidden = capo <= 0;
+  }
+
   function refreshTuning(): void {
     const previous = targetNotes;
-    targetNotes = tuningNotes(tuningById(state.tuningId), state.a4);
-    // A different instrument, or a different A4, is a different set of targets:
-    // whatever was ticked off was ticked off against the old ones. The SAME set
-    // is not — and this runs on every state write, so it also runs when the
+    targetNotes = tuningNotes(tuningById(state.tuningId), state.a4, state.capo);
+    // A different instrument, a different A4 or a different capo is a different
+    // set of targets: whatever was ticked off was ticked off against the old
+    // ones. A capo move shifts every target by at least a semitone, so it never
+    // reads as the same set here and the guide always starts over — its checks
+    // would otherwise be claims about pitches this tuner never heard. The SAME
+    // set is not — and this runs on every state write, so it also runs when the
     // player opens the tuning sheet and picks the row that is already current,
     // or saves the editor over an unchanged tuning. Those must cost nothing.
-    if (!sameTargets(previous, targetNotes)) resetGuideProgress();
+    const changed = !sameTargets(previous, targetNotes);
+    if (changed) resetGuideProgress();
     renderStrip();
+    syncCapo();
     // Readings taken through the old band, against the old targets, say nothing
     // about the new ones.
     clearMedian();
     applyAnalysisFloor();
     syncGuide();
-    if (relaxed) relax(true);
+    // The readout, the needle and the green are all claims about the targets
+    // that just moved, and applyAnalysisFloor() has held detection off for the
+    // filter's ramp — so nothing can correct them for another ~600 ms. A tuner
+    // may not say "in tune" about a pitch that is no longer in the tuning:
+    // drop the display with the progress. "—" / "Play string N" is the honest
+    // state while there is nothing left to measure, and it is a state change,
+    // not a flash. The SAME targets still cost nothing: a re-emission of the
+    // current tuning leaves a live readout exactly where it was.
+    if (changed) {
+      const now = performance.now();
+      restartLatch(now);
+      relax(true, now);
+    } else if (relaxed) {
+      relax(true);
+    }
   }
 
   /* The dwell floor is not consulted here: relaxing means HOLD_MS (600 ms) has

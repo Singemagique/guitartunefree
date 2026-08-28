@@ -17,6 +17,12 @@ export interface ViewHandle {
 const RING_MS = 2000;
 const LOOP_MS = 2000;
 const STRUM_GAP_MS = 120;
+/** How long a retune has to stop moving before the loop plays it. The capo
+    stepper repeats down to a 36 ms tick while it is held, and every tick writes
+    app state: without this, a thumb dragged from None to fret 12 fires a dozen
+    2.5 s plucks that all sound at once. One pluck, at the pitch the player
+    settled on. */
+const RETUNE_PLUCK_MS = 250;
 
 /** Spoken position of a string, counted the way players do: 1st is the highest. */
 const ORDINALS = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'] as const;
@@ -155,6 +161,7 @@ export function createManualView(): ViewHandle {
   el.setAttribute('aria-label', 'Manual tuner');
   el.innerHTML = `
     <div class="card mv-card">
+      <div class="mv-capo-row" hidden><span class="mv-capo"></span></div>
       <div class="mv-stage" role="group" aria-label="Strings" data-rows="3"></div>
     </div>
     <div class="mv-controls">
@@ -181,6 +188,8 @@ export function createManualView(): ViewHandle {
     </div>`;
 
   const stage = el.querySelector('.mv-stage') as HTMLElement;
+  const capoRow = el.querySelector('.mv-capo-row') as HTMLElement;
+  const capoTag = el.querySelector('.mv-capo') as HTMLElement;
   const loopBtn = el.querySelector('.mv-loop') as HTMLButtonElement;
   const strumBtn = el.querySelector('.mv-strum') as HTMLButtonElement;
   const pcChips = Array.from(el.querySelectorAll<HTMLButtonElement>('.mv-pc-chip'));
@@ -200,6 +209,7 @@ export function createManualView(): ViewHandle {
   let active = 0;
   let looping = false;
   let loopTimer = 0;
+  let retuneTimer = 0;
   const strumTimers: number[] = [];
 
   const drone = new Drone();
@@ -271,8 +281,18 @@ export function createManualView(): ViewHandle {
   }
 
   function relabel(): void {
-    const { tuningId, a4 } = getState();
-    notes = tuningNotes(tuningById(tuningId), a4);
+    const { tuningId, a4, capo } = getState();
+    // Capo on, the buttons pluck what the strings actually sound: the reference
+    // tone for the low string of Standard E at the 2nd fret is F♯2, and it is
+    // labelled F♯2. The drone below is untouched — that picker is absolute
+    // pitch, and a capo is a property of the fretboard, not of the note A.
+    notes = tuningNotes(tuningById(tuningId), a4, capo);
+    // The whole header row is hidden, not just the tag inside it: an empty row
+    // would keep its padding and push the headstock down for nothing. The text
+    // is written only when there is a fret to name, so the hidden row never
+    // holds a stale "Capo 3" for a screen reader to find.
+    if (capo > 0) capoTag.textContent = `Capo ${capo}`;
+    capoRow.hidden = capo <= 0;
     if (notes.length !== buttons.length) build(notes.length);
     for (let i = 0; i < buttons.length; i++) {
       const n = notes[i];
@@ -290,9 +310,24 @@ export function createManualView(): ViewHandle {
     loopTimer = window.setInterval(() => trigger(active), LOOP_MS);
   }
 
+  /** A retune the player is still making is not a pitch worth playing yet: the
+      pluck waits for the value to settle, then sounds once. Trailing, so the
+      tone that arrives is always the one the player stopped on. */
+  function queueRetunePluck(): void {
+    window.clearTimeout(retuneTimer);
+    retuneTimer = window.setTimeout(() => {
+      retuneTimer = 0;
+      if (!looping) return;
+      trigger(active);
+      armLoop();
+    }, RETUNE_PLUCK_MS);
+  }
+
   function stopLoop(): void {
     if (!looping) return;
     looping = false;
+    window.clearTimeout(retuneTimer);
+    retuneTimer = 0;
     window.clearInterval(loopTimer);
     loopTimer = 0;
     loopBtn.classList.remove('is-active');
@@ -400,11 +435,17 @@ export function createManualView(): ViewHandle {
   droneBtn.addEventListener('click', toggleDrone);
 
   subscribe((next) => {
+    const wasFreq = notes[active]?.freq ?? 0;
     relabel();
     // The loop reads notes[] fresh on every fire, so it only needs a re-pluck
-    // at the new pitch — tearing it down would drop the tone mid-tuning.
+    // at the new pitch — tearing it down would drop the tone mid-tuning. Two
+    // gates on that re-pluck: the pitch has to have actually moved (the state
+    // layer notifies on every write, including the tuning row that is already
+    // current), and it has to have stopped moving (the capo stepper repeats
+    // while it is held). Relabelling and re-arming stay eager, so the loop's
+    // own 2 s tick never lands in the middle of a sweep.
     if (looping) {
-      trigger(active);
+      if ((notes[active]?.freq ?? 0) !== wasFreq) queueRetunePluck();
       armLoop();
     }
     // Recalibrating A4 moves the drone with everything else, without a gap.

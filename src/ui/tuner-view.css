@@ -308,6 +308,31 @@
   color: var(--green);
 }
 
+/* Capo tag. An outlined amber chip between the strip's title and the guide
+   toggle: the two of them are the only fixed-width things in the row (~83px and
+   ~70px with the widest fret number), so on the narrowest supported column —
+   288px at 320px of viewport — the title still keeps ~115px and ellipses rather
+   than pushing anything out of the row. It never animates: a capo is a setting,
+   not an event. */
+.tv-capo {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--amber-line);
+  border-radius: 999px;
+  background: var(--amber-soft);
+  /* 8.0:1 on the page ground through the soft fill — the tag carries its
+     meaning in text, so the text is what has to clear AA. */
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .tv .tv-guide {
   flex: 0 0 auto;
   padding-inline: 16px;

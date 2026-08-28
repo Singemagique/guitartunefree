@@ -357,3 +357,44 @@ One-tap "Tune all" flow on the Auto tab: the app walks the player through every 
 - Headless Chrome end-to-end with a fake mic (--use-file-for-fake-audio-capture, generated WAV): a WAV playing each open string of Standard E in tune for ~1.6 s in sequence must check all six pills off in order and reach the completion state with zero manual input beyond starting the mic and enabling the guide; a second WAV where string 3 is 20 cents flat must NOT confirm string 3 (guidance stays) until a later in-tune segment.
 - Nearest-string auto mode unchanged when the toggle is off (existing suites).
 - Keyboard: the toggle and pills operable; aria states correct; contrast AA on the new treatments; targets >= 44px.
+
+
+## v1.5 — Sweetened tunings & capo transpose
+
+Two additions to the tuning system: per-string cent offsets (so targets can sit a few cents off equal temperament — "sweetened" tunings), and a capo setting that transposes every target so you can tune with the capo clamped on.
+
+### Contracts
+
+**src/state.ts**
+```ts
+export interface AppState { tuningId: string; a4: number; capo: number } // capo NEW: integer 0-12, default 0, clamped on set, persisted in the existing blob (tolerant load: missing/junk -> 0)
+```
+
+**src/music/tunings.ts**
+```ts
+export interface Tuning { id; name; detail; midis; group; cents?: readonly number[] }
+// cents NEW: per-string offsets, same length as midis, each clamped to -50..+50; omitted = all zero.
+export function tuningNotes(t: Tuning, a4?: number, capo?: number): NoteInfo[]
+// midis transposed UP by capo semitones (name/pc/octave from the transposed midi), then freq scaled by 2^(cents[i]/1200).
+// The offset never changes the note NAME, only the target frequency. capo default 0. Existing 2-arg calls stay valid.
+export function stringCents(t: Tuning, i: number): number   // 0 when absent
+export function saveCustomTuning(t: { id?; name; midis: number[]; cents?: number[] }): Tuning // cents persisted, clamped, trimmed to midis length
+```
+Two new factory presets in the Guitar group, after the existing ten:
+- id "sweet-standard", name "Standard · sweetened", detail "E A D G B E", midis as standard, cents [0, -2, -2, -4, -6, -2] — a light sweetening that tames the guitar's sharp-sounding major third against open chords.
+- id "james-taylor", name "James Taylor", detail "E A D G B E", midis as standard, cents [-12, -10, -8, -4, -6, -3] — his published sweetened offsets (verify the numbers against your knowledge; they are widely documented).
+
+**Capo semantics**: the capo transposes every tuner/manual target (capo 2 on Drop D -> low string target E3... i.e. midis+2) because that is what the strings sound with the capo clamped. The DRONE is untouched (absolute pitch picker). The A4 calibration composes as before. The v1.3 analysis floor and sub-band fence follow the transposed targets automatically because they derive from tuningNotes(t, a4, capo).
+
+### UI (src/main.ts + style.css, src/ui/tuner-view.*, src/ui/manual-view.*)
+- **Capo control**: a compact row pinned at the top of the tuning sheet (above the group sections): label "Capo", a stepper (-/+, hold-repeat) reading "None" or "Fret N" (0-12), 44 px targets, aria-label "Capo fret". Changing it calls setState({capo}) and does NOT close the sheet.
+- **Capo visibility**: when capo > 0, the header tuning chip reads "{name} · capo {n}"; the tuner view and manual view each show a small static "CAPO {n}" tag (`.tv-capo` / `.mv-capo`, amber outline chip near the strip/headstock title) so a transposed display is never a mystery. Pills and string buttons show the TRANSPOSED note names.
+- **Editor fine-tune**: each string row in the custom tuning editor gains a cents stepper (-50..+50, step 1, hold-repeat) rendered as "±0¢" style value between the existing semitone steppers and... layout is the editor agent's call, but 44 px targets, aria-label "Fine tune string {playerNo} in cents", and the live detail preview appends non-zero offsets like "B3 −6¢". Sweetened factory presets show their offsets in their sheet row detail on a second muted line (e.g. "−12 −10 −8 −4 −6 −3 ¢") so the effect is discoverable.
+- **Guided tuning, latch, needle**: unchanged code paths — they read target freq from tuningNotes and simply follow.
+- Announcement rule: spoken names spell sharps; a non-zero offset is NOT spoken per string (the target frequency shift is inaudible as language); the capo IS spoken when the strip renders transposed names (the existing tuning-change announcements pick it up naturally if they re-read the labels — verify).
+
+### Verification bar
+- Note math: capo 2 + A4 442 + cents -6 composes to freq = midiToFreq(midi+2, 442) * 2^(-6/1200) exactly; name comes from midi+2. Unit-check in a harness across presets, capo 0/2/5/12, a4 415/440/466.
+- Fake-mic e2e: with "Standard · sweetened" selected, a tone at exactly the OFFSET frequency of the B string (B3 -6 cents) reads 0 cents on the gauge and confirms in guided mode, while pure equal-tempered B3 reads +6 cents. With capo 2 on Standard E, a tone at F#2 (the transposed low string) is targeted as string 6 and reads 0 cents.
+- Existing suites (verify_v12, verify_final, the v14 guided suites) still pass; capo 0 and cents-absent behaviour is bit-identical to v1.4.
+- Layout at the five viewports; 44 px targets; AA contrast on the new chips/steppers; no flashing.

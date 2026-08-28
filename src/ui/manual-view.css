@@ -14,6 +14,36 @@
   padding: 8px 6px 10px;
 }
 
+/* Card header. It exists only to carry the capo tag, so manual-view.ts hides
+   the whole row at capo 0 and the headstock card is then exactly what it was
+   before capos existed. With a capo it costs ~26px above the stage — the stage
+   itself is untouched, so no post moves off its button at any size. */
+.mv-capo-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 4px 6px;
+}
+
+/* Same chip as the tuner's .tv-capo — the two views are one screen apart and a
+   capo has to look like one thing. (Both are view-local by the CSS ownership
+   rule, so the declarations are duplicated rather than shared.) */
+.mv-capo {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--amber-line);
+  border-radius: 999px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* One grid row per tuner row — 4 to 8 strings make 2 to 4 of them, the left
    column taking the surplus. The rows are equal and fixed, and the headstock
    spans all of them at the drawing's own aspect ratio, so the posts drawn at
