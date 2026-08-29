@@ -101,8 +101,27 @@ export class MicCapture {
   private floorHz = HIGHPASS_DEFAULT;
   private readonly frame = new Float32Array(this.bufferSize);
 
+  /**
+   * Called once the graph exists and once it is gone. Strum capture uses it to
+   * follow the chain across a mic restart; it is a plain slot rather than a
+   * listener list because there is exactly one tap, and a tap that replaces
+   * this should chain to whatever it found here.
+   */
+  onGraphChange: (() => void) | null = null;
+
   get running(): boolean {
     return this.analyser !== null;
+  }
+
+  /**
+   * The tail of the shared filter chain — the very node the analyser reads,
+   * after the highpass and the 2 kHz lowpass. Strum capture taps THIS so both
+   * modes hear the same band through the same two biquads (v2.0 condition 3:
+   * the graph itself is untouched). Null until the graph is built; the caller
+   * owns whatever it connects and must disconnect it again.
+   */
+  get filteredOutput(): AudioNode | null {
+    return this.lowpass;
   }
 
   get sampleRate(): number {
@@ -183,6 +202,7 @@ export class MicCapture {
       for (const track of this.stream.getTracks()) track.stop();
       this.stream = null;
     }
+    this.onGraphChange?.();
   }
 
   read(target: Float32Array): void {
@@ -251,5 +271,6 @@ export class MicCapture {
     this.highpass = highpass;
     this.lowpass = lowpass;
     this.analyser = analyser;
+    this.onGraphChange?.();
   }
 }

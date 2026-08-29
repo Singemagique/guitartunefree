@@ -596,6 +596,362 @@
   margin-top: 16px;
 }
 
+/* ================================================================
+   Strum check (beta) — the second mode of this tab. Everything below
+   is additive: with the mode segment on "Single" not one of these
+   selectors can match, because the whole panel is [hidden].
+
+   Nothing here moves and nothing here changes on its own clock. Every
+   state in this mode is written once, when a strum has been analysed,
+   and then holds.
+   ================================================================ */
+
+/* ---------- mode segment ---------- */
+
+/* The shared .seg primitive, at a height that clears 44px on the item itself
+   rather than leaning on its ±4px hit extension — this is the control that
+   swaps the whole view, so it gets the full target. */
+.tv-modes .seg-item {
+  min-height: 44px;
+  gap: 7px;
+}
+
+/* Outlined amber, the same language as the capo tag: a label about the thing
+   next to it, not a state of it. */
+.tv-beta {
+  padding: 2px 5px;
+  border: 1px solid var(--amber-line);
+  border-radius: 5px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+/* On the selected item the tag is sitting on amber, where an amber tag is
+   invisible: take the label's own ink instead. */
+.tv-modes .seg-item.is-active .tv-beta {
+  border-color: rgba(35, 24, 10, 0.4);
+  background: rgba(35, 24, 10, 0.13);
+  color: var(--ink);
+}
+
+/* ---------- strum panel ---------- */
+
+.tv-strum {
+  display: grid;
+}
+
+.tv-strum-card {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  padding: 14px 12px 12px;
+  /* Holds the start-listening overlay, which is absolutely inset to the card
+     exactly as it is in Single mode. */
+  overflow: hidden;
+}
+
+.tv[data-phase="blocked"] .tv-strum-card {
+  opacity: 0.42;
+}
+
+/* Condition 2 never opens the mic, so the start overlay has nothing to offer
+   here: left in, it covered the very message explaining why the mode is not
+   running, and tapping it did nothing at all. Withdrawing it also takes the
+   button out of the tab order, so the keyboard cannot reach a dead control. */
+.tv-strum[data-state="unsupported"] .tv-cta {
+  display: none;
+}
+
+/* The flow line. Text only — "Listening…" is a sentence, not a blinking dot. */
+.tv-flow {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ---------- results board ---------- */
+
+.tv-board {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* no · note · bar · cents · mark. The bar is the only elastic column, so the
+   row keeps every label at full size down to 320px of viewport (264px of card
+   interior, of which the four fixed columns and the gaps take 133). */
+.tv-row {
+  display: grid;
+  grid-template-columns: 1.7ch minmax(34px, auto) minmax(56px, 1fr) minmax(4.6ch, auto) 16px;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 2px;
+}
+
+.tv-row-no {
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--muted);
+}
+
+.tv-row-name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 1px;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.tv-row-oct {
+  font-size: 0.74em;
+  opacity: 0.65;
+}
+
+/* Nothing strummed yet: the board is a list of targets, so it reads as one —
+   dimmed to the secondary colour rather than dressed up as a zero reading. */
+.tv-board.is-empty .tv-row-name {
+  color: var(--muted);
+}
+
+.tv-board.is-empty .tv-bar {
+  opacity: 0.5;
+}
+
+/* ---------- the mini cents bar ---------- */
+
+.tv-bar {
+  position: relative;
+  min-width: 0;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.34);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.tv-bar-zero {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 50%;
+  width: 1px;
+  margin-left: -0.5px;
+  background: var(--amber);
+  opacity: 0.55;
+}
+
+/* Grown from the centre by the view: ±25 cents of scale across the full width,
+   so half the track is 25 cents and one pixel is about a third of a cent on a
+   130px rail. */
+.tv-bar-fill {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  min-width: 3px;
+  border-radius: 999px;
+  background: var(--amber);
+}
+
+.tv-row.is-done .tv-bar-fill {
+  background: var(--green);
+}
+
+/* Saturation, said out loud. Past ±25 cents the fill has reached the rail and
+   the bar is no longer measuring anything, so the rail is capped in the stop
+   colour — the eye is told to read the figure instead. The figure itself never
+   saturates: a string a tone flat prints its real offset next to this cap. */
+.tv-bar.is-peg-lo::after,
+.tv-bar.is-peg-hi::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  background: var(--red);
+}
+
+.tv-bar.is-peg-lo::after {
+  left: 0;
+}
+
+.tv-bar.is-peg-hi::after {
+  right: 0;
+}
+
+/* ---------- figure and mark ---------- */
+
+.tv-row-cents {
+  font-size: 13.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.tv-row.is-done .tv-row-cents {
+  color: var(--green);
+}
+
+.tv-board.is-empty .tv-row-cents {
+  color: var(--muted);
+}
+
+.tv-row-mark {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+/* The guided strip's tick, at row scale and in the same green: "done" has one
+   shape in this tab, whichever mode drew it. */
+.tv-row-check {
+  display: none;
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: var(--green);
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tv-row.is-done .tv-row-check {
+  display: block;
+}
+
+.tv-row.is-done .tv-row-arrow {
+  display: none;
+}
+
+.tv-row-arrow {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--amber);
+}
+
+/* ---------- the honest no-reading row ---------- */
+
+/* A string the analysis could not separate has no bar to draw and no figure to
+   print, so it gets neither: an empty track centred on zero would read as a
+   string in tune, which is the one thing this state must never look like. */
+.tv-row.is-unknown .tv-bar,
+.tv-row.is-unknown .tv-row-cents,
+.tv-row.is-unknown .tv-row-mark {
+  display: none;
+}
+
+.tv-row-note {
+  grid-column: 3 / -1;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+/* ---------- refusal / unsupported ---------- */
+
+.tv-strum-msg {
+  display: grid;
+  gap: 6px;
+  padding: 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.tv-strum[data-state="refused"] .tv-strum-msg {
+  border-color: rgba(255, 111, 102, 0.4);
+}
+
+.tv-strum-msg-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 5.9:1 on the card — the refusal has to be legible, not just alarming. */
+.tv-strum[data-state="refused"] .tv-strum-msg-title {
+  color: var(--red);
+}
+
+.tv-strum-msg-body {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* The one actionable line: what the app currently believes about the capo. */
+.tv-strum-msg-hint {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--amber);
+}
+
+.tv-strum-foot {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* ---------- narrow and short screens ---------- */
+
+@media (max-width: 359px) {
+  .tv-row {
+    grid-template-columns: 1.7ch minmax(32px, auto) minmax(44px, 1fr) minmax(4.4ch, auto) 15px;
+    gap: 6px;
+  }
+
+  .tv-row-name {
+    font-size: 14px;
+  }
+
+  .tv-strum-card {
+    padding-inline: 10px;
+  }
+}
+
+/* Landscape phones. The board is allowed to run under the view's fade — it is
+   a list, and a list that scrolls is a list — but there is no reason to make it
+   scroll sooner than it has to. */
+@media (max-height: 560px) {
+  .tv-strum-card {
+    gap: 8px;
+    padding: 12px 10px 10px;
+  }
+
+  .tv-row {
+    min-height: 32px;
+  }
+
+  .tv-strum-foot {
+    font-size: 10.5px;
+  }
+}
+
 /* ---------- motion preferences ---------- */
 
 /* Nothing here transitions position — every one of these is a colour or
@@ -614,11 +970,30 @@
   .tv-metrics,
   .tv-cents,
   .tv-hint,
-  .tv-strings-title {
+  .tv-strings-title,
+  .tv-modes .seg-item {
     transition-duration: 200ms !important;
   }
 
   .tv-dot {
     animation: none;
   }
+}
+
+/* Strum-mode header row: the flow line with the capo disclosure beside it,
+   since the Single-mode strip (and its tag) is hidden while Strum is up. */
+.tv-strum-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tv-strum-head .tv-flow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tv-strum-capo {
+  flex: 0 0 auto;
 }

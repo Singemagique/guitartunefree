@@ -398,3 +398,54 @@ Two new factory presets in the Guitar group, after the existing ten:
 - Fake-mic e2e: with "Standard · sweetened" selected, a tone at exactly the OFFSET frequency of the B string (B3 -6 cents) reads 0 cents on the gauge and confirms in guided mode, while pure equal-tempered B3 reads +6 cents. With capo 2 on Standard E, a tone at F#2 (the transposed low string) is targeted as string 6 and reads 0 cents.
 - Existing suites (verify_v12, verify_final, the v14 guided suites) still pass; capo 0 and cents-absent behaviour is bit-identical to v1.4.
 - Layout at the five viewports; 44 px targets; AA contrast on the new chips/steppers; no flashing.
+
+
+## v2.0 — Strum check (beta): polyphonic tuning
+
+One strum, all strings read at once — as an ADDITIVE mode beside the precision monophonic tuner, which stays exactly as it is. Algorithm per the research spike (scratchpad/spike-poly/poly.mjs is the reference implementation), shipped under the ADVERSARIAL VERIFICATION's conditions, which are binding:
+
+1. **Whole-offset hard gate**: if the median per-string offset exceeds ~70 cents, or any string's estimate sits within 15 cents of the +-100 cent search edge, or the shown offsets straddle/lock onto the +-50 cent aliasing rails (the odd half-semitone blind band a verifier found: a guitar ~150/250 cents out otherwise aliases to confident +-50 readings), REFUSE the reading and say why ("The whole guitar reads about a semitone off — check the capo setting, then use Single mode"). Never display per-string numbers from a refused analysis.
+2. **Octave-duplicate tunings unsupported for now**: if any two strings of the selected tuning differ by exactly 12 semitones (Drop D, DADGAD, Open D/G/E variants...), the strum mode shows a static "not reliable for octave-paired tunings yet — use Single mode" state instead of listening. (Standard's E2/E4 two-octave pair is fine per both test suites.)
+3. **The shared mic graph is untouched** — the 2 kHz lowpass stays (verified better under noise); strum capture taps the SAME filtered chain.
+4. **Promise +-5 cents, not +-3**; a string is "in tune" at |printed cents| <= 5 — verdict, arrow, bar and figure all derive from one rounded value so the board can never print the same number with two different verdicts. Copy never claims more than +-5.
+5. **"No reading" is a first-class state** per string ("couldn't confirm — pluck it alone or strum again"), because detection is ~95% clean and ~67-76% in noise while accuracy holds only for detected strings.
+6. FFT tables cached across analyses; runs off the main thread.
+
+### src/audio/strum.ts (pure port of the spike algorithm — no DOM)
+```ts
+export interface StrumStringResult { cents: number | null; confidence: number; detected: boolean }
+export interface StrumResult {
+  strings: StrumStringResult[];            // one per target, same order
+  refusal: 'offset' | null;                // condition 1 tripped
+  globalOffsetCents: number | null;        // the median offset when refusing
+  analysisMs: number;
+}
+export function analyzeStrum(samples: Float32Array, sampleRate: number, targetFreqs: readonly number[]): StrumResult;
+export function hasOctavePair(midis: readonly number[]): boolean; // condition 2 helper
+```
+Port poly.mjs faithfully (9 Hann frames from onset+35 ms across ~1.2 s of starts, N=16384 — 32768 when the lowest target is below ~95 Hz —, exact-Hann peak interpolation, all-strings coarse comb BEFORE any refinement, 4 ascending refinement passes with geometric fusion exclusion + contamination weighting, measured-amplitude contaminant model, octave escape, exclusive-evidence confidence, per-frame median fusion). FFT tables cached module-level per size. Verified by a PARITY harness: the TS port and spike-poly/poly.mjs must produce identical cents (within 0.01) on the spike's own scenario WAVs.
+
+### src/audio/strumcapture.ts (recorder tap)
+```ts
+export class StrumCapture {
+  async start(): Promise<void>;   // taps MicCapture's shared FILTERED chain via an AudioWorklet (inline module via Blob URL or Vite worker URL — zero deps); mic permission flows exactly as today
+  stop(): void;
+  onStrum: ((samples: Float32Array, sampleRate: number) => void) | null; // fires once per detected strum: onset = RMS jump >= ~12 dB over the running background; delivers onset-100ms through onset+2.1 s (2.4 s when N=32768 tunings); onOnset fires at the confirmed onset for UI acknowledgement; onset confirm requires level CONTINUITY through the sustain window plus low-band energy, so metronome click trains (any bpm/subdivision) never trigger it
+}
+```
+Analysis runs in a Web Worker (module worker; transferable Float32Array); the view never blocks. mic.ts may gain a small internal hook to expose the filtered node for the tap — the graph itself is unchanged.
+
+### UI (src/ui/tuner-view.ts + .css — additive)
+- A two-item mode segment at the top of the Auto view: "Single" (today's tuner, default, absolutely unchanged) | "Strum · beta".
+- Strum mode replaces the gauge area with a results board: one row per string — note name, a mini centred cents bar (+-25 c scale, saturating honestly), the cents figure, in-tune check at |c|<=5 (static, green, no flash), tune up/down arrow otherwise, or the "couldn't confirm" state. Above it: the flow state ("Strum all strings once" -> "Listening — strum all six strings once" -> at the confirmed onset an acknowledging "Heard it — reading…" held >= 400 ms -> results with "strum again any time"; a capo tag is disclosed in the strum card whenever one is set); the board auto-rearms. Refusal and octave-pair states per conditions 1-2. A small "BETA" tag on the segment label + a one-line footnote: "Validated on synthetic strums; real-guitar calibration in progress."
+- Guided mode, the latch, wake locks, capo/sweetened targets (targetFreqs already carry them) all compose; guided + strum are mutually exclusive modes of the Auto view.
+- Accessibility: the board is a list with per-string accessible names ("String 6, E2, 4 cents flat"); results announced once per strum via the existing polite region; all states static.
+
+### Verification bar
+- Parity harness (port vs spike reference) passes.
+- Fake-mic e2e: a synthetic down-strum WAV (borrow spike synth) with known detunes -> board shows each string within the spike's measured accuracy; a whole-shifted strum (capo-1 mismatch) -> refusal state, no numbers; DADGAD selected -> unsupported state without listening; noisy strum -> at least the unconfirmed states render honestly.
+- Single mode regression: all existing suites pass untouched.
+- Layouts at the five viewports; AA contrast; 44 px targets; no flashing.
+
+### Real-audio calibration (pending user recordings — see research/recordings/README.md)
+The polarisation split/depth of real strings is the one unmeasured parameter the accuracy claim rests on. When recordings arrive: fit per-string B and polarisation from the solo-string clips, re-run the strum clips against ground truth from the monophonic tuner, tune GATE/confidence thresholds, and only then drop the beta label.

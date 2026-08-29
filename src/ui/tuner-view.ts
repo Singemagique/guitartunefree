@@ -6,6 +6,9 @@ import { centsBetween, nearestNote, prettyPc } from '../music/notes';
 import { tuningById, tuningNotes } from '../music/tunings';
 import { MicCapture, clampAnalysisFloor } from '../audio/mic';
 import { MIN_FREQ, PitchDetector } from '../audio/pitch';
+import type { StrumResult, StrumStringResult } from '../audio/strum';
+import { hasOctavePair } from '../audio/strum';
+import { StrumCapture, analyzeStrumAsync } from '../audio/strumcapture';
 import { holdWake, releaseWake } from '../wakelock';
 
 export interface ViewHandle {
@@ -96,7 +99,47 @@ const ANNOUNCE_HOLD_MS = 1400;
     answer to "what now", the readout is the answer to "did that work". */
 const GUIDE_HOLD_MS = 1200;
 
+/* ---------- strum check (beta) ---------- */
+
+/** Condition 4 of the v2.0 adversarial verification: the strum board promises
+    ±5 cents and no copy anywhere in it may claim better. The monophonic latch
+    happens to use the same number, but they are not the same promise — this one
+    is what the polyphonic estimator was measured at, so it gets its own name. */
+const STRUM_IN_TUNE_CENTS = 5;
+/** Half-scale of the mini bar, in cents. Past it the bar saturates and marks
+    the rail; the printed figure never saturates, so a string a tone flat reads
+    a pegged bar next to an honest "−203¢" rather than a plausible "−25¢". */
+const STRUM_BAR_CENTS = 25;
+/** How many out-of-tune strings a single spoken sentence will name before it
+    starts counting them instead. Six clauses is not a sentence. */
+const STRUM_SPEAK_MAX = 3;
+/** A worker that never answers must not leave the board reading "Analysing…"
+    for the rest of the session. */
+const STRUM_TIMEOUT_MS = 8000;
+/** How long the "heard it" state stays up before results may replace it. The
+    onset gives it two full seconds by itself; this only matters where the
+    analysis is reached without one. Below ~300 ms a state is a flash, not a
+    message — the delivery-driven version showed it for 35-125 ms. */
+const STRUM_ACK_MIN_MS = 400;
+
 type Phase = 'idle' | 'starting' | 'live' | 'blocked';
+type Mode = 'single' | 'strum';
+/**
+ * `idle` mic not open yet · `armed` open and waiting for a strum ·
+ * `analysing` samples handed to the worker · `results` a board with numbers on
+ * it (still armed underneath) · `refused` condition 1 tripped, numbers withheld
+ * · `unsupported` condition 2, the mode never listens at all.
+ */
+type StrumState = 'idle' | 'armed' | 'analysing' | 'results' | 'refused' | 'unsupported';
+
+interface BoardRow {
+  el: HTMLElement;
+  bar: HTMLElement;
+  fill: HTMLElement;
+  cents: HTMLElement;
+  arrow: HTMLElement;
+  note: HTMLElement;
+}
 
 /** Once the user grants the mic we may re-open it on show() without a gesture. */
 let micGrantedThisSession = false;
@@ -201,6 +244,15 @@ function sameTargets(a: NoteInfo[], b: NoteInfo[]): boolean {
     spelling, which screen readers already say correctly. */
 function spokenName(note: NoteInfo): string {
   return note.pc.length > 1 ? `${note.pc.charAt(0)} sharp ${note.octave}` : note.name;
+}
+
+/** "4 cents flat" / "1 cent sharp" — the spoken half of a board row. The
+    in-tune test is the caller's (it is made on the unrounded offset, so it can
+    never disagree with the check mark); this only names an offset it is already
+    known to have. */
+function centsPhrase(cents: number): string {
+  const n = Math.abs(Math.round(cents));
+  return `${n} ${n === 1 ? 'cent' : 'cents'} ${cents < 0 ? 'flat' : 'sharp'}`;
 }
 
 function micIcon(): SVGSVGElement {
@@ -361,6 +413,26 @@ export function createTunerView(): ViewHandle {
   /** What the hint would be saying if nothing were holding the region. */
   let pendingSpoken = 'Play a string';
 
+  /* ---------- strum check (beta) ---------- */
+
+  /** Not persisted: Single is what this tab is. */
+  let mode: Mode = 'single';
+  let strumState: StrumState = 'idle';
+  let strumCap: StrumCapture | null = null;
+  let strumStarting = false;
+  /** Bumped on every analysis AND on every stop, so a result that arrives after
+      the board has moved on — a tuning change, a mode switch, hide() — is
+      dropped instead of drawn against targets it was never measured on. */
+  let strumSeq = 0;
+  let strumBusy = false;
+  /** When the board last said "Heard it" — see settleAck. */
+  let strumAckAt = 0;
+  /** Condition 2: two strings exactly an octave apart. Latched from the CURRENT
+      targets, so it follows the tuning sheet and the capo (a capo transposes
+      every string by the same amount and cannot create or remove a pair). */
+  let octaveBlocked = false;
+  let boardRows: BoardRow[] = [];
+
   const recent = new Float64Array(MEDIAN_N);
   const recentSorted = new Float64Array(MEDIAN_N);
   let recentCount = 0;
@@ -383,6 +455,31 @@ export function createTunerView(): ViewHandle {
   const el = h('section', 'tv is-idle');
   el.setAttribute('aria-label', 'Auto tuner');
   el.dataset.phase = 'idle';
+  el.dataset.mode = 'single';
+
+  /* Mode segment. Two buttons, not a radio group: they are toggles over one
+     view, and the rest of the app spells that aria-pressed. Not persisted —
+     Single is the tuner this app is, and a beta mode that let itself back in on
+     the next launch would be answering a question nobody asked twice. */
+  const modeSeg = h('div', 'seg tv-modes');
+  modeSeg.setAttribute('role', 'group');
+  modeSeg.setAttribute('aria-label', 'Tuner mode');
+  const singleBtn = h('button', 'seg-item tv-mode is-active', 'Single');
+  singleBtn.type = 'button';
+  singleBtn.setAttribute('aria-pressed', 'true');
+  const strumBtn = h('button', 'seg-item tv-mode');
+  strumBtn.type = 'button';
+  strumBtn.setAttribute('aria-pressed', 'false');
+  /* The eye gets "Strum · BETA"; the ear gets a sentence, because a screen
+     reader reading a middle dot as "dot" turns the label into nonsense. */
+  strumBtn.setAttribute('aria-label', 'Strum check, beta');
+  const strumBtnText = h('span', undefined, 'Strum');
+  strumBtnText.setAttribute('aria-hidden', 'true');
+  const betaTag = h('span', 'tv-beta', 'beta');
+  betaTag.setAttribute('aria-hidden', 'true');
+  strumBtn.append(strumBtnText, betaTag);
+  modeSeg.append(singleBtn, strumBtn);
+  el.appendChild(modeSeg);
 
   const card = h('div', 'card tv-card');
   const gauge = buildGauge();
@@ -462,9 +559,83 @@ export function createTunerView(): ViewHandle {
   notice.append(noticeTitle, noticeBody, steps, retryBtn);
   el.appendChild(notice);
 
+  /* ---------- strum board (beta) ---------- */
+
+  const strumPanel = h('section', 'tv-strum');
+  strumPanel.hidden = true;
+  strumPanel.setAttribute('aria-label', 'Strum check');
+  strumPanel.dataset.state = 'idle';
+
+  const strumCard = h('div', 'card tv-strum-card');
+  const flowEl = h('p', 'tv-flow', 'Strum all strings once');
+  /* The flow line is decoration for the ear: everything it says is either in
+     the board's own labels or in the one sentence the region below speaks per
+     strum, and a live flow line would narrate "Listening… Analysing…" over the
+     result the player is waiting for. */
+  flowEl.setAttribute('aria-hidden', 'true');
+
+  const board = h('ul', 'tv-board is-empty');
+  /* Explicit, because the list marker is off: without it Safari drops the list
+     semantics and the six rows stop being "1 of 6" to a screen reader. */
+  board.setAttribute('role', 'list');
+  board.setAttribute('aria-label', 'Strum results');
+
+  const strumMsg = h('div', 'tv-strum-msg');
+  strumMsg.hidden = true;
+  const strumMsgTitle = h('p', 'tv-strum-msg-title');
+  const strumMsgBody = h('p', 'tv-strum-msg-body');
+  const strumMsgHint = h('p', 'tv-strum-msg-hint');
+  strumMsg.append(strumMsgTitle, strumMsgBody, strumMsgHint);
+
+  /* The board prints transposed names too, so the capo has to be disclosed in
+     the card the user is actually looking at — the Single-mode tag is hidden
+     with the rest of that card while Strum is up. */
+  const strumCapoTag = h('span', 'tv-capo tv-strum-capo');
+  strumCapoTag.hidden = true;
+
+  const strumFoot = h(
+    'p',
+    'tv-strum-foot',
+    'Validated on synthetic strums; real-guitar calibration in progress.',
+  );
+
+  /* The same overlay as Single mode, in the card that owns it. Both are inside
+     containers that the mode switch hides outright, so the shared
+     `.tv[data-phase="idle"] .tv-cta` rule can only ever reveal one of them. */
+  const strumCta = h('div', 'tv-cta');
+  const strumStartBtn = h('button', 'btn btn-primary tv-start');
+  strumStartBtn.type = 'button';
+  const strumStartLabel = h('span', undefined, 'Start listening');
+  strumStartBtn.append(micIcon(), strumStartLabel);
+  strumCta.append(
+    strumStartBtn,
+    h(
+      'p',
+      'tv-cta-note',
+      'Your guitar is heard on-device only — nothing is recorded or uploaded.',
+    ),
+  );
+
+  const strumHead = h('div', 'tv-strum-head');
+  strumHead.append(flowEl, strumCapoTag);
+  strumCard.append(strumHead, board, strumMsg, strumFoot, strumCta);
+  strumPanel.appendChild(strumCard);
+  el.appendChild(strumPanel);
+
+  /* Outside the panel on purpose. A polite region only announces a MUTATION,
+     and a region that was display:none when the text was written announces
+     nothing at all when it is later revealed — which is exactly what the
+     octave-pair state would hit, since its sentence is composed before the
+     mode is on screen. Kept out of the mode switch entirely, and written only
+     while strum mode is the mode. */
+  const strumLive = h('span', 'sr-only tv-strum-live');
+  strumLive.setAttribute('aria-live', 'polite');
+  el.appendChild(strumLive);
+
   /** A pending start() ignores further taps, so the button must look inert. */
   function syncStartBtn(): void {
     startBtn.disabled = starting || phase === 'starting';
+    strumStartBtn.disabled = strumStarting || phase === 'starting';
   }
 
   function setPhase(next: Phase): void {
@@ -472,7 +643,9 @@ export function createTunerView(): ViewHandle {
     phase = next;
     el.dataset.phase = next;
     syncStartBtn();
-    setText(startLabel, next === 'starting' ? 'Starting…' : 'Start listening');
+    const label = next === 'starting' ? 'Starting…' : 'Start listening';
+    setText(startLabel, label);
+    setText(strumStartLabel, label);
   }
 
   function setIdleVisual(on: boolean): void {
@@ -724,6 +897,604 @@ export function createTunerView(): ViewHandle {
     syncGuide();
   }
 
+  /* ================= strum check (beta) ================= */
+
+  /** Everything the board is claiming, dropped in one go. Called whenever the
+      targets move or the mic closes: a row's number is a measurement against a
+      particular target frequency, and it stops being true the moment that
+      frequency does. */
+  function clearBoard(): void {
+    board.classList.add('is-empty');
+    for (let i = 0; i < boardRows.length; i++) {
+      const row = boardRows[i];
+      row.el.className = 'tv-row';
+      row.el.setAttribute('aria-label', rowLabel(i, null));
+      row.bar.className = 'tv-bar';
+      row.fill.removeAttribute('style');
+      row.fill.hidden = true;
+      setText(row.cents, '—');
+      setText(row.arrow, '');
+      row.note.hidden = true;
+    }
+  }
+
+  /** One row per target, low string first — the same order as the strip above
+      it in Single mode, so "string 6" is the top row in both. */
+  function renderBoard(): void {
+    board.textContent = '';
+    boardRows = targetNotes.map((note, i) => {
+      const li = h('li', 'tv-row');
+      const no = h('span', 'tv-row-no', String(stringNo(i)));
+      no.setAttribute('aria-hidden', 'true');
+      const name = h('span', 'tv-row-name');
+      name.setAttribute('aria-hidden', 'true');
+      name.append(
+        h('span', 'tv-row-pc', prettyPc(note.pc)),
+        h('span', 'tv-row-oct', String(note.octave)),
+      );
+
+      const bar = h('span', 'tv-bar');
+      bar.setAttribute('aria-hidden', 'true');
+      const fill = h('span', 'tv-bar-fill');
+      fill.hidden = true;
+      bar.append(h('span', 'tv-bar-zero'), fill);
+
+      const cents = h('span', 'tv-row-cents', '—');
+      cents.setAttribute('aria-hidden', 'true');
+
+      const mark = h('span', 'tv-row-mark');
+      mark.setAttribute('aria-hidden', 'true');
+      const arrow = h('span', 'tv-row-arrow');
+      mark.append(checkIcon('tv-row-check'), arrow);
+
+      /* The honest per-string no-reading state (condition 5). It takes the
+         width of the bar and the figure rather than sitting under them: a row
+         with nothing measured has no bar to draw and no number to print, and
+         leaving an empty track there reads as "0 cents". */
+      const note2 = h('span', 'tv-row-note', 'Couldn’t confirm — strum again or pluck it alone');
+      note2.setAttribute('aria-hidden', 'true');
+      note2.hidden = true;
+
+      li.append(no, name, bar, cents, mark, note2);
+      li.setAttribute('aria-label', rowLabel(i, null));
+      return { el: li, bar, fill, cents, arrow, note: note2 };
+    });
+    for (const row of boardRows) board.appendChild(row.el);
+    clearBoard();
+  }
+
+  /** The whole meaning of a row, in one string, for the ear. `null` is the
+      board before anything has been strummed — a target, with no claim about
+      it. */
+  function rowLabel(i: number, result: StrumStringResult | null): string {
+    const base = `String ${stringNo(i)}, ${spokenName(targetNotes[i])}`;
+    if (!result) return base;
+    if (!result.detected || result.cents === null) return `${base}, not confirmed`;
+    // The SAME rounded figure the row prints (see fillRow): a row that says
+    // "+5¢" is in tune to the eye and to the ear, and one that says "+6¢" is not
+    // in either. Deciding on the unrounded value put "+5¢ ↓ sharp" next to
+    // "+5¢ ✓ in tune" on adjacent rows.
+    const shown = Math.round(result.cents);
+    if (Math.abs(shown) <= STRUM_IN_TUNE_CENTS) return `${base}, in tune`;
+    return `${base}, ${centsPhrase(shown)}`;
+  }
+
+  /** Draw one measurement. The bar saturates at ±STRUM_BAR_CENTS and says so
+      with a rail marker; the figure never does. */
+  function fillRow(i: number, result: StrumStringResult): void {
+    const row = boardRows[i];
+    const cents = result.cents;
+    if (!result.detected || cents === null) {
+      row.el.className = 'tv-row is-unknown';
+      row.bar.className = 'tv-bar';
+      row.fill.hidden = true;
+      row.fill.removeAttribute('style');
+      setText(row.cents, '—');
+      setText(row.arrow, '');
+      row.note.hidden = false;
+      row.el.setAttribute('aria-label', rowLabel(i, result));
+      return;
+    }
+
+    // Round ONCE, then decide everything from that one number — the verdict,
+    // the arrow, the bar, the rail, the figure and the sentence. Judging the
+    // unrounded offset while printing the rounded one made the board contradict
+    // itself: anything in [4.5, 5.5) prints "±5¢" but landed on either side of
+    // the in-tune line, so one row read "+5¢ ↓" and the next "+5¢ ✓".
+    const shown = Math.round(cents);
+    const done = Math.abs(shown) <= STRUM_IN_TUNE_CENTS;
+    row.el.className = `tv-row${done ? ' is-done' : shown < 0 ? ' is-flat' : ' is-sharp'}`;
+    row.note.hidden = true;
+
+    const span = Math.min(Math.abs(shown), STRUM_BAR_CENTS) / STRUM_BAR_CENTS;
+    row.fill.hidden = false;
+    row.fill.style.width = `${(span * 50).toFixed(2)}%`;
+    if (shown < 0) {
+      row.fill.style.right = '50%';
+      row.fill.style.left = 'auto';
+    } else {
+      row.fill.style.left = '50%';
+      row.fill.style.right = 'auto';
+    }
+    row.bar.className =
+      Math.abs(shown) > STRUM_BAR_CENTS
+        ? `tv-bar ${shown < 0 ? 'is-peg-lo' : 'is-peg-hi'}`
+        : 'tv-bar';
+
+    setText(row.cents, formatCents(shown));
+    setText(row.arrow, done ? '' : shown < 0 ? '↑' : '↓');
+    row.el.setAttribute('aria-label', rowLabel(i, result));
+  }
+
+  /** One sentence per strum. Named strings are capped so the region stays
+      speakable; past the cap the rest are counted. */
+  function boardSentence(results: readonly StrumStringResult[]): string {
+    const n = results.length;
+    let inTune = 0;
+    let unknown = 0;
+    const off: { i: number; cents: number }[] = [];
+    for (let i = 0; i < n; i++) {
+      const r = results[i];
+      // Rounded, exactly as fillRow prints it: the count spoken here has to be
+      // the count of ticks on screen.
+      const shown = r.cents === null ? null : Math.round(r.cents);
+      if (!r.detected || shown === null) {
+        unknown++;
+      } else if (Math.abs(shown) <= STRUM_IN_TUNE_CENTS) {
+        inTune++;
+      } else {
+        off.push({ i, cents: shown });
+      }
+    }
+    if (unknown === 0 && off.length === 0) {
+      return `All ${n} strings in tune.`;
+    }
+    const parts = [`${inTune} of ${n} in tune.`];
+    off.sort((a, b) => Math.abs(b.cents) - Math.abs(a.cents));
+    for (const item of off.slice(0, STRUM_SPEAK_MAX)) {
+      parts.push(
+        `String ${stringNo(item.i)}, ${spokenName(targetNotes[item.i])}, ${centsPhrase(item.cents)}.`,
+      );
+    }
+    const rest = off.length - STRUM_SPEAK_MAX;
+    if (rest > 0) parts.push(`And ${rest} more out of tune.`);
+    if (unknown > 0) {
+      parts.push(`${unknown} ${unknown === 1 ? 'string' : 'strings'} not confirmed.`);
+    }
+    return parts.join(' ');
+  }
+
+  /**
+   * The strum panel's own polite region. The Single-mode hint region cannot
+   * serve here: it lives inside the gauge card, which this mode hides, and a
+   * display:none region announces nothing.
+   *
+   * By default a region already holding this sentence is not rewritten, because
+   * a rewrite is a second mutation and a second reading — that is right for the
+   * state re-compositions (a tuning change, construction) that pass through
+   * here. It is exactly wrong for a RESULT: two strums that measure the same
+   * produce the same sentence, and the board's numbers do not move either, so a
+   * player who cannot see the screen got nothing at all for strums 2..N — no way
+   * to tell heard from mis-heard from ignored. Every analysis therefore forces
+   * its own announcement, by emptying the region first so the write that follows
+   * is a real mutation.
+   */
+  function speakStrum(text: string, force = false): void {
+    // Only this mode speaks here, and only while it is the mode on screen: the
+    // board's states are composed on tuning changes and at construction too,
+    // and none of those are things to read out to somebody using Single mode.
+    if (mode !== 'strum') return;
+    if ((strumLive.textContent ?? '') === text) {
+      if (!force) return;
+      setText(strumLive, '');
+      // Next frame, not this one: clearing and rewriting inside a single task
+      // nets out to no change at all by the time assistive tech looks, and
+      // announces nothing. Two frames are two mutations, and the second reads.
+      const seq = strumSeq;
+      requestAnimationFrame(() => {
+        if (mode === 'strum' && seq === strumSeq) setText(strumLive, text);
+      });
+      return;
+    }
+    setText(strumLive, text);
+  }
+
+  function setStrumState(next: StrumState): void {
+    if (strumState === next) return;
+    const previous = strumState;
+    strumState = next;
+    strumPanel.dataset.state = next;
+    if (next === 'armed') {
+      // Only worth saying when the mode has just become usable — after the
+      // unsupported state, or on the first open. Re-arming after a result is
+      // silent: the result sentence is still the thing being read.
+      if (previous === 'unsupported' || previous === 'idle') {
+        speakStrum('Listening. Strum all strings once.');
+      }
+    }
+    renderStrum();
+  }
+
+  /** Pushes the flow line and which of board / message is on screen. Every one
+      of these is an instant text or hidden swap — nothing in this mode
+      animates, and nothing in it changes luminance on its own clock. */
+  function renderStrum(): void {
+    const blocked = strumState === 'unsupported' || strumState === 'refused';
+    board.hidden = blocked;
+    strumMsg.hidden = !blocked;
+    let flow: string;
+    switch (strumState) {
+      case 'analysing':
+        // Written at the ONSET, not at the delivery — see handleOnset. "Heard
+        // it" is the claim that can honestly be made 0.26 s in, and it is the
+        // only thing on screen for the two seconds the window takes to record.
+        flow = 'Heard it — reading…';
+        break;
+      case 'armed':
+        // The one sentence that teaches the mode used to live in the idle state
+        // only, under the start overlay's own veil (1.32:1 against it), and was
+        // replaced by "Listening…" the instant the mic opened — so a sighted
+        // player never got to read it. It belongs in the phase where the card is
+        // uncovered and the instruction is still true.
+        flow = 'Listening — strum all six strings once';
+        break;
+      case 'results':
+      case 'refused':
+        flow = 'Strum again any time';
+        break;
+      case 'unsupported':
+        flow = 'Strum check unavailable';
+        break;
+      default:
+        flow = 'Strum all strings once';
+    }
+    setText(flowEl, flow);
+  }
+
+  /** Condition 2. Shown INSTEAD of listening: the capture is never opened for
+      one of these tunings, so there is no chance of a number reaching the
+      board through some later path. */
+  function renderUnsupported(): void {
+    const name = tuningById(state.tuningId).name;
+    setText(strumMsgTitle, 'Not ready for this tuning');
+    setText(
+      strumMsgBody,
+      `Strum check can’t separate two strings an octave apart yet, and ${name} has a pair. Single mode reads this tuning exactly as it always has.`,
+    );
+    setText(strumMsgHint, '');
+    strumMsgHint.hidden = true;
+    speakStrum(
+      `Strum check is not reliable for octave-paired tunings yet. ${name} has a pair. Use Single mode.`,
+    );
+  }
+
+  /** Condition 1. The analysis said the whole instrument is off by about a
+      semitone, which is almost always a capo the app does not know about (or
+      one it thinks is there and is not) — and past that offset the per-string
+      estimates are searching against the wrong targets, so not one of them is
+      printed. */
+  function renderRefusal(): void {
+    const capo = state.capo;
+    setText(strumMsgTitle, 'Can’t trust this reading');
+    setText(
+      strumMsgBody,
+      'The whole guitar reads about a semitone off — check the capo setting, then use Single mode.',
+    );
+    setText(
+      strumMsgHint,
+      capo > 0
+        ? `The app has a capo at fret ${capo}. Clear it in the tuning sheet if the neck is open.`
+        : 'The app has no capo set. Add one in the tuning sheet if there is one on the neck.',
+    );
+    strumMsgHint.hidden = false;
+    // Forced: a second strum that is refused for the same reason is still a
+    // second strum, and the message on screen does not change to say so.
+    speakStrum(
+      'Reading refused. The whole guitar reads about a semitone off — check the capo setting, then use Single mode.',
+      true,
+    );
+  }
+
+  function applyStrumResult(res: StrumResult): void {
+    if (res.refusal) {
+      // Numbers from a refused analysis are never displayed, so they are never
+      // written into the rows in the first place.
+      clearBoard();
+      renderRefusal();
+      setStrumState('refused');
+      renderStrum();
+      return;
+    }
+    // A result measured against a different number of strings than the board
+    // is showing was queued before a tuning change that the sequence guard
+    // somehow let through. Say nothing rather than something wrong.
+    if (res.strings.length !== boardRows.length) {
+      setStrumState('armed');
+      return;
+    }
+    board.classList.remove('is-empty');
+    for (let i = 0; i < boardRows.length; i++) fillRow(i, res.strings[i]);
+    setStrumState('results');
+    renderStrum();
+    // Forced, for the same reason: two identical strums must be two
+    // announcements, or the board is silent about all but the first.
+    speakStrum(boardSentence(res.strings), true);
+  }
+
+  /* ---------- analysis transport ---------- */
+
+  /**
+   * Condition 6's off-main-thread half, wrapped in a deadline.
+   *
+   * `analyzeStrumAsync` owns the worker (and the FFT tables warming inside it)
+   * and falls back to this thread where a module worker cannot be built. What
+   * it does not do is settle when the worker dies mid-request: the promise for
+   * that strum is simply never resolved, and `strumBusy` would hold the board
+   * on "Analysing…" for the rest of the session. A whole analysis is 40–150 ms,
+   * so anything past STRUM_TIMEOUT_MS is a wedge, not a slow machine.
+   */
+  function analyse(
+    samples: Float32Array,
+    sampleRate: number,
+    targetFreqs: number[],
+  ): Promise<StrumResult> {
+    let timer = 0;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = window.setTimeout(() => reject(new Error('strum-timeout')), STRUM_TIMEOUT_MS);
+    });
+    return Promise.race([analyzeStrumAsync(samples, sampleRate, targetFreqs), deadline]).finally(
+      () => {
+        window.clearTimeout(timer);
+      },
+    );
+  }
+
+  /**
+   * The strings have been hit and the onset is confirmed — 0.26 s in, with the
+   * whole 2.1 s capture window still to record.
+   *
+   * Reacting to the DELIVERY instead left the screen unchanged for 2.1 s after
+   * the strum and then flashed "Analysing…" past in 35-125 ms, which is a state
+   * nobody can read: the player got no feedback while it mattered and an
+   * unreadable one when it did not. Same DSP, same numbers; the difference is
+   * that the mode now answers when it is spoken to.
+   */
+  function handleOnset(): void {
+    if (mode !== 'strum' || octaveBlocked || strumBusy) return;
+    strumAckAt = performance.now();
+    setStrumState('analysing');
+  }
+
+  /** Hold the acknowledgement on screen long enough to be read, however fast
+      the worker comes back. From the onset that is always true already; this is
+      the guard for the paths that reach the analysis without one. */
+  function settleAck(): Promise<void> {
+    const left = STRUM_ACK_MIN_MS - (performance.now() - strumAckAt);
+    if (left <= 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, left);
+    });
+  }
+
+  async function handleStrum(samples: Float32Array, sampleRate: number): Promise<void> {
+    if (mode !== 'strum' || octaveBlocked) return;
+    // A second strum while the first is still in the worker is dropped rather
+    // than queued: the player strummed again because they want the CURRENT
+    // state of the instrument, and a stale board arriving after a fresh one
+    // would overwrite it.
+    if (strumBusy) return;
+    strumBusy = true;
+    const id = ++strumSeq;
+    if (strumState !== 'analysing') {
+      strumAckAt = performance.now();
+      setStrumState('analysing');
+    }
+    const targetFreqs = targetNotes.map((note) => note.freq);
+    try {
+      const res = await analyse(samples, sampleRate, targetFreqs);
+      if (id !== strumSeq || mode !== 'strum') return;
+      await settleAck();
+      if (id !== strumSeq || mode !== 'strum') return;
+      applyStrumResult(res);
+    } catch {
+      if (id !== strumSeq || mode !== 'strum') return;
+      // Nothing to show and nothing honest to say about why. Go back to
+      // waiting, keeping whatever the last good strum put on the board.
+      setStrumState(board.classList.contains('is-empty') ? 'armed' : 'results');
+    } finally {
+      strumBusy = false;
+    }
+  }
+
+  /* ---------- capture lifecycle ---------- */
+
+  /** Condition 2's gate, recomputed from the live targets. Returns true when
+      the answer changed, because the caller has to decide whether to open or
+      close the capture on the back of it. */
+  function syncOctaveGate(): boolean {
+    const next = hasOctavePair(targetNotes.map((note) => note.midi));
+    if (next === octaveBlocked) return false;
+    octaveBlocked = next;
+    return true;
+  }
+
+  async function startStrum(): Promise<void> {
+    if (strumStarting || strumCap) return;
+    if (octaveBlocked) {
+      renderUnsupported();
+      setStrumState('unsupported');
+      renderStrum();
+      return;
+    }
+    strumStarting = true;
+    setPhase('starting');
+    syncStartBtn();
+    // The view's OWN microphone, handed to the tap below. Given none,
+    // StrumCapture opens one of its own — and then the "same filtered chain"
+    // this mode is built on is a second, private chain: a second getUserMedia on
+    // every mode switch, and an analysis floor only the tuner's mic ever hears
+    // about. One mic, one graph, one floor (v2.0 condition 3).
+    const shared = mic ?? new MicCapture();
+    // Before the graph exists, for the same reason Single mode does it: a
+    // highpass built at the tuning's cutoff never has to ramp there.
+    applyAnalysisFloor(shared);
+    try {
+      const capture = new StrumCapture();
+      capture.onOnset = handleOnset;
+      capture.onStrum = (samples: Float32Array, sampleRate: number): void => {
+        void handleStrum(samples, sampleRate);
+      };
+      // The targets choose the recorded window: a tuning whose lowest string
+      // needs the 32768-point transform needs the longer one, and a capture
+      // opened without them would hand the first strum a window too short for
+      // the analyser's last frame.
+      await capture.start({ mic: shared, targetFreqs: targetNotes.map((note) => note.freq) });
+      micGrantedThisSession = true;
+      // The mode or the tab may have changed while the permission prompt was
+      // up; a capture nobody is watching is closed on the spot.
+      if (!visible || mode !== 'strum') {
+        capture.onStrum = null;
+        capture.onOnset = null;
+        capture.stop();
+        releaseUnadopted(shared);
+        setPhase('idle');
+        return;
+      }
+      mic = shared;
+      strumCap = capture;
+      // Same reason string as Single mode: this is still the tuner holding the
+      // screen awake, and the two modes are never live at once.
+      holdWake('tuner');
+      setPhase('live');
+      setStrumState('armed');
+    } catch (err) {
+      // A stream that opened before something further down failed belongs to
+      // nobody, and nobody would ever close it.
+      releaseUnadopted(shared);
+      showNotice(err);
+    } finally {
+      strumStarting = false;
+      syncStartBtn();
+    }
+  }
+
+  /** Close a microphone this view opened but never took ownership of. */
+  function releaseUnadopted(capture: MicCapture): void {
+    if (capture === mic) return;
+    capture.stop();
+    micFloorHz = 0;
+  }
+
+  function stopStrum(): void {
+    if (strumCap) {
+      strumCap.onStrum = null;
+      strumCap.onOnset = null;
+      // The mic is the view's, not the capture's, so this detaches the tap and
+      // leaves the stream open for Single mode.
+      strumCap.stop();
+      strumCap = null;
+    }
+    releaseWake('tuner');
+    // Anything still in the worker is now about a microphone that is closed.
+    strumSeq++;
+    strumBusy = false;
+    if (mode === 'strum' && (phase === 'live' || phase === 'starting')) setPhase('idle');
+    if (strumState !== 'unsupported') setStrumState('idle');
+  }
+
+  /** Targets moved (tuning, capo or A4): every number on the board was measured
+      against the old ones, so the board goes back to naming strings. Re-runs
+      the octave gate too — the new tuning may be one this mode cannot read, or
+      may be the first one it can. */
+  function resetStrum(): void {
+    strumSeq++;
+    strumBusy = false;
+    renderBoard();
+    // A live capture keeps recording, but the window it records has to follow
+    // the new targets — a drop to a bass tuning lengthens it.
+    strumCap?.setTargets(targetNotes.map((note) => note.freq));
+    const gateChanged = syncOctaveGate();
+    if (mode !== 'strum') {
+      strumState = octaveBlocked ? 'unsupported' : 'idle';
+      strumPanel.dataset.state = strumState;
+      if (octaveBlocked) renderUnsupported();
+      renderStrum();
+      return;
+    }
+    if (octaveBlocked) {
+      // Same as entering the mode on one of these tunings: nothing is listening
+      // through the shared stream any more, so it does not stay open.
+      if (strumCap) stopStrum();
+      stop();
+      renderUnsupported();
+      setStrumState('unsupported');
+      renderStrum();
+      return;
+    }
+    if (gateChanged && !strumCap && visible && micGrantedThisSession && phase !== 'blocked') {
+      // The tuning that was blocking this mode has gone: open the mic the way
+      // entering the mode would have.
+      setStrumState('idle');
+      void startStrum();
+      return;
+    }
+    setStrumState(strumCap ? 'armed' : 'idle');
+    renderStrum();
+  }
+
+  function syncMode(): void {
+    const strum = mode === 'strum';
+    el.dataset.mode = mode;
+    singleBtn.classList.toggle('is-active', !strum);
+    strumBtn.classList.toggle('is-active', strum);
+    singleBtn.setAttribute('aria-pressed', strum ? 'false' : 'true');
+    strumBtn.setAttribute('aria-pressed', strum ? 'true' : 'false');
+    // [hidden] is display:none !important in style.css, so this beats every
+    // display rule the two modes' own stylesheets set.
+    card.hidden = strum;
+    strings.hidden = strum;
+    status.hidden = strum;
+    strumPanel.hidden = !strum;
+    // Leaving the mode empties its region, so re-entering on the same state
+    // (an unsupported tuning, say) is a real mutation again and is spoken.
+    if (!strum) setText(strumLive, '');
+  }
+
+  function setMode(next: Mode): void {
+    if (mode === next) return;
+    if (next === 'strum') {
+      // The guide is a Single-mode flow. Turning it off through its own path
+      // clears progress, restores the strip and takes the readout back to
+      // "Play a string" — so coming back to Single finds the tuner in the
+      // state it would have been in had the guide simply been switched off.
+      if (guideOn) setGuideOn(false);
+      stop(true);
+      mode = 'strum';
+      syncMode();
+      syncOctaveGate();
+      if (octaveBlocked) {
+        // Condition 2 never listens, so the stream the two modes share has no
+        // reader on this side. Close it rather than leave the OS microphone
+        // indicator lit for a mode that is switched off.
+        stop();
+        renderUnsupported();
+        setStrumState('unsupported');
+        renderStrum();
+      } else {
+        setStrumState('idle');
+        renderStrum();
+        if (visible && micGrantedThisSession && phase !== 'blocked') void startStrum();
+      }
+    } else {
+      stopStrum();
+      mode = 'single';
+      syncMode();
+      if (visible && micGrantedThisSession && phase !== 'blocked') void start();
+    }
+  }
+
+  /* ====================================================== */
+
   /** Tell the capture where the instrument starts, and remember what it did with
       that — the fence below has to agree with the filter, not with the request.
       Not simply the first entry: the ukulele's reentrant G leads its tuning but
@@ -758,8 +1529,12 @@ export function createTunerView(): ViewHandle {
       element never carries a stale "Capo 3" for a screen reader to find. */
   function syncCapo(): void {
     const capo = state.capo;
-    if (capo > 0) setText(capoTag, `Capo ${capo}`);
+    if (capo > 0) {
+      setText(capoTag, `Capo ${capo}`);
+      setText(strumCapoTag, `Capo ${capo}`);
+    }
     capoTag.hidden = capo <= 0;
+    strumCapoTag.hidden = capo <= 0;
   }
 
   function refreshTuning(): void {
@@ -776,6 +1551,11 @@ export function createTunerView(): ViewHandle {
     const changed = !sameTargets(previous, targetNotes);
     if (changed) resetGuideProgress();
     renderStrip();
+    // Same rule as the guide's checks, for the same reason: a cent figure is a
+    // claim about one target frequency and expires with it. This also re-runs
+    // condition 2's gate, which is the only thing that can open or close the
+    // strum capture without the player touching the mode segment.
+    if (changed) resetStrum();
     syncCapo();
     // Readings taken through the old band, against the old targets, say nothing
     // about the new ones.
@@ -1024,6 +1804,12 @@ export function createTunerView(): ViewHandle {
     // (hide() is not this: the guide is meant to survive a trip to another tab.)
     resetGuideProgress();
     syncGuide();
+    // Nothing was heard here either: the board stops showing measurements it
+    // can no longer refresh, and stops saying it is listening.
+    strumSeq++;
+    strumBusy = false;
+    clearBoard();
+    if (strumState !== 'unsupported') setStrumState('idle');
     setPhase('blocked');
     relax(true);
   }
@@ -1033,18 +1819,24 @@ export function createTunerView(): ViewHandle {
     starting = true;
     setPhase('starting');
     try {
-      const capture = new MicCapture();
+      // The one microphone. Coming back from Strum mode it is already open and
+      // already at this tuning's cutoff, and re-using it is the whole of v2.0
+      // condition 3: both modes hear the same band through the same two biquads,
+      // and a mode switch costs no getUserMedia at all.
+      const capture = mic ?? new MicCapture();
       // Before the graph exists, so the highpass is BUILT at the tuning's cutoff
       // instead of being ramped there a moment after audio starts flowing: that
       // ramp used to fire on every single mic start, and a string already
       // ringing when it fired read tens of cents sharp for the first few frames.
       applyAnalysisFloor(capture);
-      await capture.start();
+      if (!capture.running) await capture.start();
       // Reaching here means getUserMedia resolved, so the grant is real even if
       // the user switched tabs while the permission prompt was up.
       micGrantedThisSession = true;
       if (!visible) {
         capture.stop();
+        mic = null;
+        micFloorHz = 0;
         setPhase('idle');
         return;
       }
@@ -1080,12 +1872,19 @@ export function createTunerView(): ViewHandle {
     }
   }
 
-  function stop(): void {
+  /**
+   * Ends the Single-mode analysis loop. `keepMic` leaves the microphone itself
+   * open, which is what a mode switch wants: one mic serves both modes, so
+   * closing it on the way into Strum only to re-open it there would be a second
+   * getUserMedia, a second filter chain, and a second analysis floor to keep in
+   * step with the tuning.
+   */
+  function stop(keepMic = false): void {
     if (rafId) {
       cancelAnimationFrame(rafId);
       rafId = 0;
     }
-    if (mic) {
+    if (mic && !keepMic) {
       mic.stop();
       mic = null;
     }
@@ -1097,8 +1896,9 @@ export function createTunerView(): ViewHandle {
     frame = null;
     detectHoldUntil = 0;
     // The next capture is a new filter, built from scratch at whatever cutoff
-    // the tuning then wants.
-    micFloorHz = 0;
+    // the tuning then wants — but only if the mic actually closed. A filter that
+    // is still running is still at the cutoff it was last told.
+    if (!mic) micFloorHz = 0;
     if (phase === 'live' || phase === 'starting') setPhase('idle');
     relax(true);
   }
@@ -1106,12 +1906,22 @@ export function createTunerView(): ViewHandle {
   startBtn.addEventListener('click', () => {
     void start();
   });
+  strumStartBtn.addEventListener('click', () => {
+    void startStrum();
+  });
   retryBtn.addEventListener('click', () => {
     setPhase('idle');
-    void start();
+    if (mode === 'strum') void startStrum();
+    else void start();
   });
   guideBtn.addEventListener('click', () => {
     setGuideOn(!guideOn);
+  });
+  singleBtn.addEventListener('click', () => {
+    setMode('single');
+  });
+  strumBtn.addEventListener('click', () => {
+    setMode('strum');
   });
 
   subscribe((next: AppState) => {
@@ -1124,10 +1934,15 @@ export function createTunerView(): ViewHandle {
     el,
     show(): void {
       visible = true;
-      if (micGrantedThisSession && phase !== 'blocked') void start();
+      if (!micGrantedThisSession || phase === 'blocked') return;
+      if (mode === 'strum') void startStrum();
+      else void start();
     },
     hide(): void {
       visible = false;
+      // The tap comes off the graph before the graph goes away — stop() owns the
+      // microphone both modes share.
+      stopStrum();
       stop();
     },
   };
