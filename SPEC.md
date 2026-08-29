@@ -449,3 +449,34 @@ Analysis runs in a Web Worker (module worker; transferable Float32Array); the vi
 
 ### Real-audio calibration (pending user recordings — see research/recordings/README.md)
 The polarisation split/depth of real strings is the one unmeasured parameter the accuracy claim rests on. When recordings arrive: fit per-string B and polarisation from the solo-string clips, re-run the strum clips against ground truth from the monophonic tuner, tune GATE/confidence thresholds, and only then drop the beta label.
+
+
+### v2.0.2 — Strum cycle feedback (addendum to v2.0)
+The strum loop (strum -> adjust -> strum again) needs visible acknowledgement per strum. All additions flash-free (signal-driven or determinate motion only):
+- **StrumCapture additions**: `onLevel: ((rms: number) => void) | null` — smoothed input level 0..1, throttled to ~12 Hz, active while listening; `get windowSeconds(): number` — the post-onset capture length currently in force.
+- **Level ripple** (`.tv-listen-level`): a small inline element beside the armed flow line — 3-5 vertical bars whose heights follow the smoothed level (transform: scaleY, lerped; continuous signal-driven motion like the needle, never a blink). Visible only in the armed state; communicates "the mic hears the room".
+- **Capture progress** (`.tv-strum-progress`): a 3 px track under the flow line. Hidden until onset; from onOnset it fills left-to-right over exactly `windowSeconds` (transform: scaleX with a linear transition sized to the window — one style write, no rAF needed), then completes and hands over when results land. Restarts cleanly on every strum.
+- **Stale results** (`.tv-board.is-stale`): from onset until the new results land, existing rows dim (opacity ~0.45, static change) so old numbers cannot be mistaken for the new reading; the flow line reads "Heard it — reading…" as today.
+- A strum arriving while a previous analysis is in flight supersedes it (existing strumSeq machinery) — the progress bar restarts from zero.
+- Reduced motion: the level ripple is hidden; the progress bar becomes a stepped fill at 25% increments (no smooth motion), stale dimming stays.
+- Accessibility: the progress is presentational (aria-hidden); the state line remains the announced channel.
+
+
+## v2.1 — Native strum capture for the Android app
+
+Root cause (researched, Chromium-source-confirmed): Android WebView/Chrome select an OS input preset for getUserMedia; web constraints cannot reach a truly unprocessed mic path, the behaviour is field-trial-dependent, and readback via getSettings() reports the configuration, not reality. Strum analysis is intolerant of HAL noise suppression (a ringing chord looks like stationary noise). Fix in two layers:
+
+### Capture-path probe (ships first, with v2.0.2)
+- `src/audio/captureprobe.ts`: `probeCapturePath(mic: MicCapture): Promise<'clean' | 'processed' | 'unknown'>` — plays a steady mid-band tone (~700 Hz, below the analysis lowpass, modest gain) through the speaker for ~1.2 s while watching the captured envelope through the SAME analysis chain: flat envelope -> clean; decaying/pumping (NS/AGC adaptation) or collapse (AEC) -> processed. Runs at most once per session, only in Strum mode, only when the UA carries the WebView marker "; wv" (Chrome-proper is known-good); cached result.
+- Strum mode on a 'processed' path shows a static card: capture is processed by the system and Strum check cannot read reliably here; one button opens the live app URL externally (leaves the WebView); Single mode remains available in-app. No numbers are ever shown from a processed path.
+
+### Native capture plugin (the real fix)
+- A minimal in-repo Capacitor plugin (android/app/src/main/java/.../StrumRecorder.java + registration): method `record(options: { durationMs: number; sampleRate?: 48000 }) -> { base64: string; sampleRate: number; source: 'unprocessed' | 'voice_recognition' | 'camcorder' | 'mic' }` using AudioRecord with AudioSource.UNPROCESSED when PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED, else VOICE_RECOGNITION, else CAMCORDER, else MIC; 16-bit mono PCM; RECORD_AUDIO permission via the existing grant.
+- `src/audio/nativecapture.ts`: feature-detects the plugin (window.Capacitor?.Plugins?.StrumRecorder), exposes the same onOnset/onStrum shape as StrumCapture by recording a rolling window natively... KEEP IT SIMPLE: batch shape — in the APK, the strum flow becomes press-free: the view records durationMs = lead + window on onset? Native onset detection would need streaming. Accepted simplification: in the APK with the plugin available, Strum mode records continuously in short native batches (e.g. 600 ms) for onset detection JS-side, then a full-window record follows? NO — one AudioRecord session CAN run continuously; the plugin instead supports `start()` / `stop()` streaming of 250 ms PCM chunks over the bridge (~48 KB/s base64, fine), and nativecapture.ts adapts chunks into the existing StrumRecorder ring/onset machinery so onset + windowing + analysis are byte-identical to the web path.
+- The web path (Chrome/PWA) is untouched; the native path is used only when the plugin exists AND the probe said 'processed' (or unconditionally in the APK — decide by measurement: if UNPROCESSED audio is available, prefer it always in the APK).
+- The monophonic tuner stays on getUserMedia everywhere (it demonstrably tolerates the processed path).
+
+### Verification bar
+- Probe: synthetic harness proving the classifier separates flat vs NS-shaped vs AGC-pumping envelopes; e2e in headless Chrome with fake mic confirming 'clean' verdict and no card.
+- Plugin: builds in CI (gradle assembleDebug); TS layer feature-detects absence cleanly (web unchanged — all suites pass).
+- On-device validation by the user: APK strum with native path reads like the browser does.

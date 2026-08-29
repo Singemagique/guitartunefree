@@ -294,6 +294,124 @@ export function fuse(cap, { gate = GATE_DEFAULTS, evid = EVID_DEFAULTS } = {}) {
   });
 }
 
+/* ---------------------------------------------------------- segmentation */
+
+/**
+ * Split a continuous recording into the windows the APP would actually have
+ * analysed, by driving the shipped `StrumRecorder` sample-for-sample.
+ *
+ * This matters more than it looks. The README now asks for the five strums as
+ * ONE take, because the reported symptom is "reads all strings at first, then
+ * only one" — and that symptom has two completely different possible causes:
+ *
+ *   the ESTIMATOR gets less evidence from a later strum (the gates are the
+ *   problem), or
+ *   the RECORDER never delivers a later strum at all, or delivers a window
+ *   that starts in the wrong place (the capture is the problem).
+ *
+ * Only running the real recorder can tell those apart, so that is what happens
+ * here: the signal goes through the app's mic chain, into the app's onset
+ * detector, in 128-sample render quanta, and out come the exact buffers
+ * `analyzeStrum` would have been handed.
+ */
+export async function segmentStrums(x, fs, { targets = null, windowSeconds = null, quantum = 128, ...recOpts } = {}) {
+  const { capture, clean } = await loadModules();
+  if (capture?.error) return { error: capture.error, strums: [] };
+  const win =
+    windowSeconds ?? (targets ? capture.windowSecondsFor(targets, fs) : capture.windowSecondsFor([82.4], fs));
+  const rec = new capture.StrumRecorder(fs, { windowSeconds: win, ...recOpts });
+  const strums = [];
+  const onsets = [];
+  rec.onOnset = () => onsets.push(rec.written / fs);
+  rec.onStrum = (samples, rate) => {
+    strums.push({
+      x: Float64Array.from(samples),
+      fs: rate,
+      startSec: rec.lastWindowStart / rate,
+      index: strums.length,
+    });
+  };
+  const buf = new Float32Array(quantum);
+  for (let i = 0; i < x.length; i += quantum) {
+    const n = Math.min(quantum, x.length - i);
+    for (let j = 0; j < n; j++) buf[j] = x[i + j];
+    rec.push(n === quantum ? buf : buf.subarray(0, n));
+  }
+  return {
+    strums,
+    rejected: rec.rejected,
+    windowSeconds: win,
+    // Attacks the recorder found but never delivered, because the recording
+    // ended before the window filled.
+    truncated: Math.max(0, onsets.length - strums.length),
+    onsets,
+    pickN: targets ? clean.pickN(targets, fs) : null,
+  };
+}
+
+/**
+ * WHY the recorder dropped an attack, measured rather than argued.
+ *
+ * `StrumRecorderOptions` exposes four of the constants the onset decision rests
+ * on. Re-running the same recording under each, one at a time, says which one is
+ * actually holding the missing strums out — the capture-side equivalent of the
+ * confidence sweep. (JUMP_DB and the background tracker's BG_RISE are NOT
+ * exposed, so if none of these recovers the drops, those two are what is left.)
+ */
+export async function captureProbe(x, fs, targets) {
+  const variants = [
+    { label: 'shipped defaults', opts: {} },
+    { label: 'no 0.6 s warm-up', opts: { warmupSeconds: 0 }, knob: 'WARMUP_S' },
+    { label: 'absolute floor /4', opts: { absFloorRms: 0.0003 }, knob: 'ABS_FLOOR_RMS' },
+    { label: 'emphasis 300 Hz', opts: { emphasisHz: 300 }, knob: 'EMPHASIS_HZ' },
+    { label: 'emphasis 1400 Hz', opts: { emphasisHz: 1400 }, knob: 'EMPHASIS_HZ' },
+    { label: 'sustain bar 6 → 2 dB', opts: { sustainMinOverBgDb: 2 }, knob: 'SUSTAIN_MIN_OVER_BG_DB' },
+  ];
+  const out = [];
+  for (const v of variants) {
+    const seg = await segmentStrums(x, fs, { targets, ...v.opts });
+    out.push({
+      ...v,
+      delivered: seg.strums?.length ?? 0,
+      rejected: seg.rejected ?? 0,
+      onsets: (seg.strums || []).map((s) => s.startSec + 0.1),
+      error: seg.error,
+    });
+  }
+  return out;
+}
+
+/**
+ * An independent onset list, so "the recorder delivered N strums" can be
+ * compared with "there are M attacks in this recording". A plain broadband
+ * energy jump — deliberately not the app's rule, because agreeing with itself
+ * would prove nothing.
+ */
+export function crudeOnsets(x, fs, { jumpDb = 10, holdOffS = 0.7 } = {}) {
+  const hop = Math.max(1, Math.round(0.01 * fs));
+  const n = Math.floor(x.length / hop);
+  const e = new Float64Array(n);
+  for (let h = 0; h < n; h++) {
+    let s = 0;
+    for (let i = h * hop; i < (h + 1) * hop; i++) s += x[i] * x[i];
+    e[h] = Math.sqrt(s / hop);
+  }
+  const out = [];
+  let bg = e[0] || 1e-9;
+  let lock = -Infinity;
+  const jump = Math.pow(10, jumpDb / 20);
+  for (let h = 1; h < n; h++) {
+    const t = (h * hop) / fs;
+    if (e[h] > bg * jump && t - lock > holdOffS) {
+      out.push(t);
+      lock = t;
+    }
+    bg = e[h] < bg ? bg + 0.25 * (e[h] - bg) : bg + 0.02 * (e[h] - bg);
+    if (bg < 1e-9) bg = 1e-9;
+  }
+  return out;
+}
+
 /* ---------------------------------------------------- partial-level detail */
 
 /**

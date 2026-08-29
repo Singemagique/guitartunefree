@@ -27,6 +27,31 @@ const RING_SLACK_S = 0.6;
 
 /** Hop the level detector works on — 5 ms, matching the analyser's own. */
 const HOP_S = 0.005;
+
+/* ------------------------------------------------------ the level readout */
+
+/**
+ * The level the VIEW is shown is not the level the detector judges on. The
+ * detector hears a 700 Hz-tilted signal (EMPHASIS_HZ below) because that is
+ * what separates one strum's attack from the previous one's tail; a ripple
+ * driven off that would sit still while a low chord rings, which is the one
+ * moment the player most wants to see the mic is awake. So the readout takes a
+ * second, plain broadband mean-square off the same hop — two multiply-adds a
+ * sample — and leaves the detector's own arithmetic untouched.
+ */
+/** ~12 Hz: 16 hops of 5 ms is 80 ms, or 12.5 updates a second. */
+const LEVEL_EVERY_HOPS = 16;
+/**
+ * Attack fast enough that a strum is on screen within one update; release slow
+ * enough that the bars settle rather than drop out from under the chord. Per
+ * hop, so 0.4/0.08 is ~12 ms and ~60 ms to 63 % at 5 ms hops.
+ */
+const LEVEL_ATTACK = 0.4;
+const LEVEL_RELEASE = 0.08;
+/** Where the 0..1 scale starts and ends, in dBFS. Below the floor is a silent
+    room and reads 0; the ceiling is a strum at a sensible recording level. */
+const LEVEL_FLOOR_DB = -60;
+const LEVEL_CEIL_DB = -15;
 /**
  * The detector listens through a one-pole highpass; the ring buffer does not.
  *
@@ -59,6 +84,69 @@ const ABS_FLOOR_RMS = 0.0012;
     ringing chord becomes "background" over a few hundred ms rather than at once. */
 const BG_FALL = 0.15;
 const BG_RISE = 0.03;
+/**
+ * ...but "slow to follow it up" is still 0.03 a hop, a 165 ms time constant, and
+ * a real strum does not arrive as a step. A hand crossing six strings takes
+ * 30-60 ms, the low strings speak first and the body resonance behind them
+ * builds over another 100 ms, so the 20 ms short-term RMS climbs over roughly
+ * the same 165 ms the background needs to chase it. The jump the test sees is
+ * then the difference between two curves rising together, not the difference
+ * between the strum and the room it started from.
+ *
+ * Measured on research/recordings/5strum.wav (a real guitar, five strums, read
+ * through the mic chain), the two attacks with the slowest onsets:
+ *
+ *   attack   best instantaneous jump    same attack over the pre-attack floor
+ *   6.099 s        10.5 dB                        16.6 dB
+ *  11.997 s        11.9 dB                        18.0 dB
+ *
+ * Both sat under the 12 dB bar while the level they had already reached was 17
+ * dB clear of the room. So the arm test asks the question about the floor the
+ * attack rose FROM: the LOWEST background of the last `BG_LOOKBACK_S`. The
+ * background itself is untouched — this only changes what an attack is compared
+ * against, and only in the direction of a background that is climbing.
+ *
+ * 0.2 s is longer than any of the onsets above (the slowest reaches full level
+ * in ~150 ms) and shorter than the 0.35 s re-arm, so it can never reach back
+ * past a delivered capture. It does not reach past a deliberate re-seed either:
+ * every place that sets the background outright refills the whole history with
+ * it (`seedBackground`), so a lookback can never hand back a floor from before
+ * a re-arm, a rejection or the warm-up.
+ *
+ * Because it is a MINIMUM and not a delay, a background that is falling — a room
+ * going quiet, a chord decaying — reads exactly as it does today.
+ */
+const BG_LOOKBACK_S = 0.2;
+/**
+ * ...and a cap on the relief that lookback may grant, because the one thing that
+ * also lifts a background slowly is a room getting louder. A level swell — a
+ * noise source approaching, a hand on a gain knob — rises over the same few
+ * hundred ms an attack does, and in the level domain the two are the same shape.
+ * Nothing separates them cleanly: the emphasised-to-broadband contrast, which
+ * ought to catch a struck string against a spectrally stationary swell, was
+ * measured at +2.9 dB for the quietest real attack and +2.6 dB for the loudest
+ * swell, and a 40 ms rise-rate bar splits them no better. So the arm test is not
+ * made cleverer, it is BOUNDED: the floor may sit at most this far below the
+ * background as it stands.
+ *
+ * Both sides of that bound are measured. Sweeping the cap in 0.1 dB steps:
+ *
+ *   what each real 5strum.wav attack needs   0.2, 0.2, 2.1, 0.2, 0.7 dB
+ *   what each synthetic swell needs to fire
+ *     0.3 Hz/12 dB, 0.5 Hz/18 dB, 3 Hz/24 dB   never, up to 8 dB
+ *     1 Hz/24 dB, 0.7 Hz/30 dB, 2 Hz/18 dB     3.4, 3.5, 3.6 dB
+ *     0.4 Hz/36 dB                             4.1 dB
+ *     1.5 Hz/30 dB                             1.0 dB
+ *
+ * 3 dB clears the binding real attack by 0.9 dB and sits 0.4 dB under the first
+ * swell that a room could plausibly produce. The 1.5 Hz / 30 dB case is inside
+ * the window and stays there: a level that trebles and collapses twice a second
+ * is a tremolo, not a room, and excluding it would cost the 6.1 s strum on the
+ * real recording. If one is ever captured the analyser confirms no string from
+ * it and the board says so — the same end-to-end contract that already covers a
+ * syllable after a pause.
+ */
+const BG_LOOKBACK_MAX_DB = 3;
 /** A strum still rings at a quarter of its attack level a quarter-second later;
     a metronome click, a door, a pick tick do not. */
 const ATTACK_S = 0.06;
@@ -105,11 +193,36 @@ const REARM_S = 0.35;
  */
 const REJECT_REARM_S = 0.05;
 /**
- * The graph settles for half a second after the highpass moves (see
- * MicCapture.settleMs) and the analyser's first frames are part silence. Both
- * look like an attack, so the detector spends this long only listening.
+ * The graph settles after the highpass moves (see MicCapture.settleMs) and the
+ * analyser's first frames are part silence. Both look like an attack, so the
+ * detector spends this long only listening.
+ *
+ * It used to spend 0.6 s, and that swallowed a real strum whole: on
+ * research/recordings/5strum.wav the player hit the strings 0.22 s after the
+ * mode opened — which is what an armed screen INVITES — and the recorder was
+ * still deaf. Worse than deaf: the seeder below tracked the chord in both
+ * directions at 0.25 a hop, so by the time the warm-up ended the background WAS
+ * the chord (-51.7 dB against a -84 dB room) and the strum could not have been
+ * recovered afterwards either.
+ *
+ * What the guard actually has to survive is the step from silence into signal,
+ * and that is measurable: through the mic chain, the parity suite's own
+ * silence -> room-noise step peaks at -68.8 dB in the emphasised domain, 10.4 dB
+ * BELOW `ABS_FLOOR_RMS` (-58.4 dB). The absolute floor rejects it, not the deaf
+ * window. The 20 Hz highpass charges with an 8 ms time constant and the short
+ * window fills in 20 ms, so 0.15 s is 30 hops — seven times what the detector
+ * needs to have an opinion at all, and short enough that a player who strums the
+ * moment the screen arms is heard.
  */
-const WARMUP_S = 0.6;
+const WARMUP_S = 0.15;
+/**
+ * ...and the seeder is asymmetric for the same reason the running tracker is.
+ * Falling fast lets an opening burst of noise settle to the real room within a
+ * few hops; rising at `BG_RISE` means that if the warm-up does land on top of a
+ * strum, the strum raises the floor no faster than it would have during normal
+ * listening, and the attack is still there to be found when the guard lifts.
+ */
+const WARMUP_FALL = 0.25;
 
 const dbToRatio = (db: number): number => Math.pow(10, db / 20);
 
@@ -126,6 +239,14 @@ export interface StrumRecorderOptions {
   absFloorRms?: number;
   /** How far the QUIETEST confirm hop must clear the background, in dB. */
   sustainMinOverBgDb?: number;
+  /** How far back the arm test looks for the floor an attack rose from; 0
+      compares against the instantaneous background. Swept by the harness. */
+  bgLookbackSeconds?: number;
+  /** Cap on how far below the running background that floor may sit, in dB. */
+  bgLookbackMaxDb?: number;
+  /** The jump over that floor that arms the detector, in dB. Swept by the
+      harness — the shipped value is the one the click suites are measured at. */
+  jumpDb?: number;
 }
 
 /**
@@ -142,6 +263,11 @@ export class StrumRecorder {
    * looking at a screen that has not moved since they hit the strings.
    */
   onOnset: (() => void) | null = null;
+  /**
+   * Smoothed broadband input level, 0..1, ~12 Hz, for as long as samples are
+   * arriving. Purely a readout: nothing downstream of it decides anything.
+   */
+  onLevel: ((rms: number) => void) | null = null;
 
   readonly sampleRate: number;
   private readonly hop: number;
@@ -163,12 +289,22 @@ export class StrumRecorder {
   /** Partial hop accumulator. */
   private hopSum = 0;
   private hopCount = 0;
+  /** ...and the plain, untilted one the readout runs on. */
+  private rawSum = 0;
+  /** Smoothed readout level, in the raw domain, and its throttle counter. */
+  private levelSmooth = 0;
+  private levelHops = 0;
   /** Trailing SHORT_HOPS mean-squares. */
   private readonly shortMs: Float64Array;
   private shortAt = 0;
   private shortFilled = 0;
 
   private bg = 0;
+  /** The last BG_LOOKBACK_S of backgrounds; the arm test uses their minimum. */
+  private readonly bgHistory: Float64Array;
+  private bgHistoryAt = 0;
+  private readonly bgLookbackMax: number;
+  private readonly jump: number;
   private state: 'listening' | 'confirming' | 'capturing' = 'listening';
   private quietUntil = 0;
   private onsetSample = 0;
@@ -197,6 +333,10 @@ export class StrumRecorder {
     this.emphA = emph > 0 ? Math.exp((-2 * Math.PI * emph) / sampleRate) : 0;
     this.absFloor = opts.absFloorRms ?? ABS_FLOOR_RMS;
     this.sustainMinOverBg = dbToRatio(opts.sustainMinOverBgDb ?? SUSTAIN_MIN_OVER_BG_DB);
+    this.jump = dbToRatio(opts.jumpDb ?? JUMP_DB);
+    const lookback = opts.bgLookbackSeconds ?? BG_LOOKBACK_S;
+    this.bgHistory = new Float64Array(Math.max(1, Math.round((lookback * sampleRate) / this.hop)));
+    this.bgLookbackMax = dbToRatio(-(opts.bgLookbackMaxDb ?? BG_LOOKBACK_MAX_DB));
     this.shortMs = new Float64Array(SHORT_HOPS);
     const cap = this.preRoll + Math.round((WINDOW_LONG_S + RING_SLACK_S) * sampleRate);
     this.ring = new Float32Array(Math.max(cap, this.preRoll + this.window + this.hop * 8));
@@ -220,10 +360,15 @@ export class StrumRecorder {
     this.emphY = 0;
     this.hopSum = 0;
     this.hopCount = 0;
+    this.rawSum = 0;
+    this.levelSmooth = 0;
+    this.levelHops = 0;
     this.shortMs.fill(0);
     this.shortAt = 0;
     this.shortFilled = 0;
     this.bg = 0;
+    this.bgHistory.fill(0);
+    this.bgHistoryAt = 0;
     this.state = 'listening';
     this.quietUntil = 0;
     this.lastWindowStart = -1;
@@ -243,14 +388,56 @@ export class StrumRecorder {
       this.emphX = v;
       this.emphY = e;
       this.hopSum += e * e;
+      this.rawSum += v * v;
       if (++this.hopCount === this.hop) {
         // The hop that just closed ends at this absolute sample index.
         this.step(this.written + i + 1, this.hopSum / this.hop);
+        this.readout(this.rawSum / this.hop);
         this.hopSum = 0;
+        this.rawSum = 0;
         this.hopCount = 0;
       }
     }
     this.written += block.length;
+  }
+
+  /** The view's ripple, and nothing else: one closed hop's plain mean square,
+      smoothed, mapped to 0..1 and handed out at ~12 Hz. */
+  private readout(rawMs: number): void {
+    const rms = Math.sqrt(rawMs);
+    this.levelSmooth +=
+      (rms - this.levelSmooth) * (rms > this.levelSmooth ? LEVEL_ATTACK : LEVEL_RELEASE);
+    if (++this.levelHops < LEVEL_EVERY_HOPS) return;
+    this.levelHops = 0;
+    const cb = this.onLevel;
+    if (!cb) return;
+    const db = 20 * Math.log10(Math.max(this.levelSmooth, 1e-7));
+    const v = (db - LEVEL_FLOOR_DB) / (LEVEL_CEIL_DB - LEVEL_FLOOR_DB);
+    cb(v < 0 ? 0 : v > 1 ? 1 : v);
+  }
+
+  /**
+   * Set the background outright and forget the lookback, so the arm test can
+   * never compare an attack against a floor from before this moment. Every
+   * deliberate re-seed — warm-up, a rejected transient, a delivered capture —
+   * goes through here.
+   */
+  private seedBackground(level: number): void {
+    this.bg = level;
+    this.bgHistory.fill(level);
+  }
+
+  /**
+   * The floor an attack is judged against: the lowest background of the last
+   * BG_LOOKBACK_S, so a background climbing behind a slow attack cannot chase
+   * the jump out of existence. A background that is falling reads as itself.
+   */
+  private armFloor(): number {
+    const history = this.bgHistory;
+    let floor = this.bg;
+    for (let i = 0; i < history.length; i++) if (history[i] < floor) floor = history[i];
+    const cap = this.bg * this.bgLookbackMax;
+    return floor > cap ? floor : cap;
   }
 
   /** One closed hop: `end` is its exclusive end index, `ms` its mean square. */
@@ -263,18 +450,30 @@ export class StrumRecorder {
     const level = Math.sqrt(sum / this.shortFilled);
 
     if (end < this.warmup) {
-      // Listen only: seed the background from the room as it actually is.
-      this.bg = this.bg === 0 ? level : this.bg + (level - this.bg) * 0.25;
+      // Listen only: seed the background from the room as it actually is —
+      // falling fast onto the real floor, rising no faster than the running
+      // tracker would, so a strum inside the warm-up cannot become "the room".
+      this.seedBackground(
+        this.bg === 0
+          ? level
+          : this.bg + (level - this.bg) * (level > this.bg ? BG_RISE : WARMUP_FALL),
+      );
       return;
     }
 
     if (this.state === 'listening') {
       this.bg += (level - this.bg) * (level > this.bg ? BG_RISE : BG_FALL);
+      // The floor to beat is read BEFORE this hop's background joins the
+      // history: an attack is compared against the room behind it, never
+      // against the background its own first hops have already lifted.
+      const floor = this.armFloor();
+      this.bgHistory[this.bgHistoryAt] = this.bg;
+      this.bgHistoryAt = (this.bgHistoryAt + 1) % this.bgHistory.length;
       if (
         end >= this.quietUntil &&
         this.shortFilled === SHORT_HOPS &&
         level >= this.absFloor &&
-        level >= this.bg * dbToRatio(JUMP_DB)
+        level >= floor * this.jump
       ) {
         // The short window is trailing, so the attack began at its start.
         this.onsetSample = Math.max(0, end - SHORT_HOPS * this.hop);
@@ -322,10 +521,9 @@ export class StrumRecorder {
         // CLICK's onset that armed the test and the silence in front of the
         // strum that failed it. Then the room, not the transient, is the right
         // reference, and there is no reason to be deaf while a chord rings.
-        const sounding =
-          level >= this.absFloor && level >= this.bgAtOnset * dbToRatio(JUMP_DB);
+        const sounding = level >= this.absFloor && level >= this.bgAtOnset * this.jump;
         this.state = 'listening';
-        this.bg = sounding ? this.bgAtOnset : Math.max(this.bgAtOnset, level * 0.5);
+        this.seedBackground(sounding ? this.bgAtOnset : Math.max(this.bgAtOnset, level * 0.5));
         this.quietUntil = sounding ? end : end + REJECT_REARM_S * fs;
         return;
       }
@@ -336,8 +534,10 @@ export class StrumRecorder {
       this.deliver();
       this.state = 'listening';
       // Re-arm against the chord that is still ringing, not against the quiet
-      // room it started from, so the tail cannot trigger the next capture.
-      this.bg = Math.max(level, this.bgAtOnset);
+      // room it started from, so the tail cannot trigger the next capture — and
+      // wipe the lookback with it, or the next strum would be judged against the
+      // silence from before this one.
+      this.seedBackground(Math.max(level, this.bgAtOnset));
       this.quietUntil = end + REARM_S * fs;
     }
   }
@@ -439,6 +639,12 @@ export class StrumCapture {
    * acknowledge the strum while the window is still being recorded.
    */
   onOnset: (() => void) | null = null;
+  /**
+   * Smoothed input level, 0..1, ~12 times a second for as long as the tap is
+   * on the graph. The view draws a ripple off it so an armed mode looks armed;
+   * nothing in the capture path reads it.
+   */
+  onLevel: ((rms: number) => void) | null = null;
 
   private mic: MicCapture | null = null;
   private ownsMic = false;
@@ -457,6 +663,15 @@ export class StrumCapture {
 
   get listening(): boolean {
     return this.running && this.node !== null;
+  }
+
+  /**
+   * Post-onset seconds the CURRENT capture will record — what a progress bar
+   * started at `onOnset` has to run for. Before a recorder exists this is the
+   * length the next one will be built with, so the answer is never a guess.
+   */
+  get windowSeconds(): number {
+    return this.recorder?.windowSeconds ?? this.windowOverride ?? WINDOW_LONG_S;
   }
 
   /**
@@ -536,6 +751,7 @@ export class StrumCapture {
     } else this.recorder.reset();
     this.recorder.onStrum = (samples, sampleRate) => this.onStrum?.(samples, sampleRate);
     this.recorder.onOnset = () => this.onOnset?.();
+    this.recorder.onLevel = (rms) => this.onLevel?.(rms);
 
     // A node with nothing downstream is not guaranteed to be pulled, so the tap
     // ends in a muted gain. Nothing reaches the speakers: the gain is zero and
@@ -607,6 +823,7 @@ export class StrumCapture {
     if (this.recorder) {
       this.recorder.onStrum = null;
       this.recorder.onOnset = null;
+      this.recorder.onLevel = null;
     }
   }
 

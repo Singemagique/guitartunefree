@@ -80,6 +80,10 @@ export async function loadVerifySynth() {
 
 export const SET_DIR = join(tmpdir(), 'truestring-calibrate-selftest');
 
+/** Silence-plus-room-tone before the first pluck, as any real recording has.
+    Longer than StrumRecorder's 0.6 s warm-up, so the capture path is real. */
+export const PRE_ROLL_S = 0.9;
+
 /* The detune the "guitar" is actually in, in cents. The solo clips and the
    strums share it, which is what makes the solo clips usable as ground truth
    exactly the way the user's will be. */
@@ -121,7 +125,8 @@ export async function buildSet({ dir = SET_DIR, fs = 48000, clean = true } = {})
     // or recorder produces.
     const file = join(dir, `solo-${NAMES[s]}.wav`);
     const rate = s === 5 ? 44100 : fs;
-    const x = rate === fs ? sy.x : resampleLinear(sy.x, fs, rate);
+    const rolled = withPreRoll(sy.x, fs, PRE_ROLL_S, 45, 4001 + s);
+    const x = rate === fs ? rolled : resampleLinear(rolled, fs, rate);
     if (s === 1) writeWavPcm24(file, x, rate);
     else if (s === 2) writeWavFloat32(file, x, rate);
     else if (s === 3) writeStereo16(file, x, rate);
@@ -142,7 +147,7 @@ export async function buildSet({ dir = SET_DIR, fs = 48000, clean = true } = {})
         splitRel: p.split,
         polarRatio: p.polarRatio,
         polarTau: p.polarTau,
-        onset: p.onset,
+        onset: p.onset + PRE_ROLL_S,
         model: 'spike (split constant in Hz at f0)',
       },
     });
@@ -160,7 +165,7 @@ export async function buildSet({ dir = SET_DIR, fs = 48000, clean = true } = {})
       stagger: [10, 45],
     });
     const file = join(dir, `strum-down-${i + 1}.wav`);
-    writeWavPcm16(file, sy.x, fs);
+    writeWavPcm16(file, withPreRoll(sy.x, fs, PRE_ROLL_S, 45, 5001 + i), fs);
     clips.push({
       file,
       role: 'strum',
@@ -192,7 +197,7 @@ export async function buildSet({ dir = SET_DIR, fs = 48000, clean = true } = {})
         polCentsOverride: polCents,
       });
       const file = join(dir, `polar-E2-${tag}.wav`);
-      writeWavPcm16(file, sy.x, fs);
+      writeWavPcm16(file, withPreRoll(sy.x, fs, PRE_ROLL_S, 45, 7001 + polCents), fs);
       clips.push({
         file,
         role: 'polar',
@@ -224,7 +229,7 @@ export async function buildSet({ dir = SET_DIR, fs = 48000, clean = true } = {})
       noiseSnrDb: 45,
     });
     const file = join(dir, `strum-detuned-${i + 1}.wav`);
-    writeWavPcm16(file, sy.x, fs);
+    writeWavPcm16(file, withPreRoll(sy.x, fs, PRE_ROLL_S, 45, 6001 + i), fs);
     clips.push({
       file,
       role: 'strum',
@@ -247,7 +252,7 @@ export async function buildSet({ dir = SET_DIR, fs = 48000, clean = true } = {})
       noiseSnrDb: 45,
     });
     const file = join(dir, `strum-muted-${NAMES[s]}.wav`);
-    writeWavPcm16(file, sy.x, fs);
+    writeWavPcm16(file, withPreRoll(sy.x, fs, PRE_ROLL_S, 45, 8001 + s), fs);
     clips.push({
       file,
       role: 'strum',
@@ -273,7 +278,7 @@ export async function buildSet({ dir = SET_DIR, fs = 48000, clean = true } = {})
       noiseSnrDb: 14,
     });
     const file = join(dir, 'strum-noisy.wav');
-    writeWavPcm16(file, sy.x, fs);
+    writeWavPcm16(file, withPreRoll(sy.x, fs, PRE_ROLL_S, 14, 9001), fs);
     clips.push({
       file,
       role: 'strum',
@@ -300,6 +305,49 @@ export async function buildSet({ dir = SET_DIR, fs = 48000, clean = true } = {})
 }
 
 /* ------------------------------------------------------ small utilities */
+
+/**
+ * Prepend room tone, so the synthetic clips behave like recordings.
+ *
+ * Two things need it. `StrumRecorder` spends its first 0.6 s deliberately deaf
+ * (WARMUP_S) and a synth clip whose first onset is at 20 ms would simply never
+ * be captured — an artefact of the synth, not a property of the app. And the
+ * solo analysis measures the room floor from the audio BEFORE the pluck, which
+ * a clip with no pre-roll does not have.
+ *
+ * The tone is pink at exactly the level the synth's own `noiseSnrDb` puts under
+ * the note (same measurement window, same Kellett filter), so it is a
+ * continuation of the noise already in the clip rather than a new invention.
+ */
+function withPreRoll(x, fs, seconds, snrDb, seed) {
+  const a = Math.round(0.02 * fs);
+  const b = Math.min(x.length, Math.round(1.6 * fs));
+  let e = 0;
+  for (let i = a; i < b; i++) e += x[i] * x[i];
+  const nRms = Math.sqrt(e / Math.max(1, b - a)) / Math.pow(10, snrDb / 20);
+  const n = Math.round(seconds * fs);
+  const rng = mulberry(seed);
+  const pre = new Float64Array(n);
+  let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+  for (let i = 0; i < n; i++) {
+    const w = rng() * 2 - 1;
+    b0 = 0.99886 * b0 + w * 0.0555179;
+    b1 = 0.99332 * b1 + w * 0.0750759;
+    b2 = 0.969 * b2 + w * 0.153852;
+    b3 = 0.8665 * b3 + w * 0.3104856;
+    b4 = 0.55 * b4 + w * 0.5329522;
+    b5 = -0.7616 * b5 - w * 0.016898;
+    pre[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362;
+    b6 = w * 0.115926;
+  }
+  let pe = 0;
+  for (let i = 0; i < n; i++) pe += pre[i] * pre[i];
+  const g = nRms / Math.sqrt(pe / Math.max(1, n));
+  const out = new Float64Array(n + x.length);
+  for (let i = 0; i < n; i++) out[i] = pre[i] * g;
+  out.set(x, n);
+  return out;
+}
 
 /** Linear resample — only used to prove the pipeline is rate-agnostic. */
 function resampleLinear(x, fromFs, toFs) {
@@ -349,17 +397,38 @@ function writeStereo16(file, x, fs) {
 /* --------------------------------------------------- the harsher world */
 
 /**
- * In-memory strum trials for the sensitivity sweep. Not written to disk: the
- * sweep needs hundreds of them and none of them is a "recording".
+ * The worlds the sensitivity sweep runs in, from the VERIFIER's independent
+ * synth. Not written to disk: the sweep needs dozens of each and none of them
+ * is a "recording".
  *
- *   world 'clean'  the spike's own realism at 45 dB SNR (the v2.0 baseline)
- *   world 'harsh'  the VERIFIER's deep-beat polarisation (equal-amplitude
- *                  modes, 6 cents apart, partner mode ringing as long as the
- *                  dominant one) with the noise floor 10 dB higher.
+ *   clean    the v2.0 baseline: ordinary polarisation, a quiet room (45 dB).
+ *   spec     exactly the harsher world the calibration brief specifies —
+ *            polarisation at the verifier's DEEP-BEAT setting (equal-amplitude
+ *            modes 6 cents apart, the partner ringing as long as the dominant)
+ *            and the noise floor 10 dB higher.
+ *   extreme  everything above, plus the things a real room and a real guitar
+ *            add and the synth otherwise does not: a duller spectrum
+ *            (rolloff 2.6 rather than 2.0), a wide per-string level spread and
+ *            a treble trim, i.e. a strum where the top strings were caught
+ *            lightly. This is the worst case the modelled physics can produce.
  */
-export async function harshTrials({ n = 12, fs = 48000, seed0 = 31337, world = 'harsh', missing = null } = {}) {
+export const WORLDS = Object.freeze({
+  clean: { snrDb: 45, polDeep: false },
+  spec: { snrDb: 35, polDeep: true, polCentsOverride: 6.0 },
+  extreme: {
+    snrDb: 35,
+    polDeep: true,
+    polCentsOverride: 6.0,
+    rolloff: 2.6,
+    levelSpreadDb: 14,
+    levelTrimDb: [0, 0, -3, -6, -9, -12],
+  },
+});
+
+export async function harshTrials({ n = 12, fs = 48000, seed0 = 31337, world = 'spec', missing = null, dur = 2.2 } = {}) {
   const verify = await loadVerifySynth();
   if (!verify.ok) throw new Error(verify.reason);
+  const cfg = WORLDS[world] || WORLDS.spec;
   const out = [];
   for (let i = 0; i < n; i++) {
     const seed = seed0 + i * 7919;
@@ -368,16 +437,14 @@ export async function harshTrials({ n = 12, fs = 48000, seed0 = 31337, world = '
     const miss = missing ? missing(i) : [];
     const sy = verify.synthStrum({
       fs,
-      dur: 2.9,
+      dur,
       targets: STANDARD,
       cents,
       wound: [1, 1, 1, 1, 0, 0],
       seed,
-      snrDb: world === 'harsh' ? 35 : 45,
-      polDeep: world === 'harsh',
-      polCentsOverride: world === 'harsh' ? 6.0 : undefined,
       missing: miss,
       stagger: 0.03,
+      ...cfg,
     });
     out.push({ x: sy.x, fs, cents, missing: miss, seed, world });
   }
@@ -385,7 +452,7 @@ export async function harshTrials({ n = 12, fs = 48000, seed0 = 31337, world = '
 }
 
 /** Ablation trials from the SPIKE's synth: one string genuinely not played. */
-export async function ablationTrials({ n = 12, fs = 48000, seed0 = 24001 } = {}) {
+export async function ablationTrials({ n = 12, fs = 48000, seed0 = 24001, snrDb = 45, dur = 2.3 } = {}) {
   const spike = await loadSpikeSynth();
   if (!spike.ok) throw new Error(spike.reason);
   const out = [];
@@ -396,12 +463,12 @@ export async function ablationTrials({ n = 12, fs = 48000, seed0 = 24001 } = {})
     const skip = [i % 6];
     const sy = spike.synthStrum({
       fs,
-      dur: 2.7,
+      dur,
       targets: STANDARD,
       detune,
       seed,
       skip,
-      noiseSnrDb: 45,
+      noiseSnrDb: snrDb,
     });
     out.push({ x: sy.x, fs, cents: detune, missing: skip, seed, world: 'ablation' });
   }

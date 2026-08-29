@@ -9,6 +9,12 @@ import { MIN_FREQ, PitchDetector } from '../audio/pitch';
 import type { StrumResult, StrumStringResult } from '../audio/strum';
 import { hasOctavePair } from '../audio/strum';
 import { StrumCapture, analyzeStrumAsync } from '../audio/strumcapture';
+import type { CapturePath } from '../audio/captureprobe';
+import {
+  capturePathVerdict,
+  isProcessedCapturePlatform,
+  probeCapturePath,
+} from '../audio/captureprobe';
 import { holdWake, releaseWake } from '../wakelock';
 
 export interface ViewHandle {
@@ -121,16 +127,55 @@ const STRUM_TIMEOUT_MS = 8000;
     analysis is reached without one. Below ~300 ms a state is a flash, not a
     message — the delivery-driven version showed it for 35-125 ms. */
 const STRUM_ACK_MIN_MS = 400;
+/** Bars in the listening ripple. Odd, so there is a middle one to put the
+    newest sample in and an equal spread either side of it. */
+const LEVEL_BARS = 5;
+/** How far back the outermost pair reaches, in level updates (~80 ms each). */
+const LEVEL_LAG = 2;
+/** Bars never collapse to nothing: a silent room still shows five dots, which
+    is the difference between "hearing silence" and "not running". */
+const LEVEL_FLOOR = 0.16;
+/** Below this a rewrite is not a visible move, and the DOM is left alone. */
+const LEVEL_EPSILON = 0.02;
+/** Steps the progress fills in when the player has asked for less motion. */
+const PROGRESS_STEPS = 4;
+/** The window a progress run assumes if the capture is somehow not there to
+    be asked — the recorder's own longest, so the bar can only ever finish
+    early rather than sit full while the window is still recording. */
+const PROGRESS_FALLBACK_S = 2.4;
+/** Where the same app runs on an untouched capture path. In the Capacitor
+    WebView an https navigation outside the app's own scope is handed to the
+    system browser, so this link is the one way out of the processed path that
+    does not need a store listing, an install or an explanation. */
+const LIVE_APP_URL = 'https://singemagique.github.io/guitartunefree/';
 
 type Phase = 'idle' | 'starting' | 'live' | 'blocked';
 type Mode = 'single' | 'strum';
 /**
- * `idle` mic not open yet · `armed` open and waiting for a strum ·
- * `analysing` samples handed to the worker · `results` a board with numbers on
- * it (still armed underneath) · `refused` condition 1 tripped, numbers withheld
- * · `unsupported` condition 2, the mode never listens at all.
+ * `idle` mic not open yet · `checking` the mic is open and the capture-path
+ * probe is asking what the system does to it (v2.1; WebView only) · `armed`
+ * open and waiting for a strum · `analysing` samples handed to the worker ·
+ * `results` a board with numbers on it (still armed underneath) · `refused`
+ * condition 1 tripped, numbers withheld · `unsupported` condition 2, the mode
+ * never listens at all · `processed` the probe found a system-processed capture
+ * path, and the mode never listens here either.
  */
-type StrumState = 'idle' | 'armed' | 'analysing' | 'results' | 'refused' | 'unsupported';
+type StrumState =
+  | 'idle'
+  | 'checking'
+  | 'armed'
+  | 'analysing'
+  | 'results'
+  | 'refused'
+  | 'unsupported'
+  | 'processed';
+
+/** The two states this mode latches into: it is not listening, it is showing an
+    explanation instead, and the ordinary "back to idle" transitions must not
+    quietly wipe that explanation off the card. */
+function strumLatched(state: StrumState): boolean {
+  return state === 'unsupported' || state === 'processed';
+}
 
 interface BoardRow {
   el: HTMLElement;
@@ -456,7 +501,32 @@ export function createTunerView(): ViewHandle {
       targets, so it follows the tuning sheet and the capo (a capo transposes
       every string by the same amount and cannot create or remove a pair). */
   let octaveBlocked = false;
+  /**
+   * The app's other sound sources. The capture-path probe plays a tone and
+   * reads the envelope that comes back, so anything else coming out of the
+   * speaker at the same time is IN that envelope: a metronome would read as
+   * pumping and a drone would raise the room until the tone no longer clears
+   * it. Neither would be a measurement of the capture path, so the probe simply
+   * does not run — and returns 'unknown', which proceeds normally.
+   *
+   * Both views announce their transitions on `window` (the same events the
+   * shell badges their tabs with), and every view is constructed before any of
+   * them can start, so a listener attached here sees every change there is.
+   */
+  let metronomeSounding = false;
+  let droneSounding = false;
   let boardRows: BoardRow[] = [];
+  /** The stepped progress fill's pending writes; empty whenever the smooth
+      transition is the one in use. Cleared before every restart, so a
+      superseded strum cannot keep filling the bar the next one owns. */
+  const progressTimers: number[] = [];
+  /** Read at each use rather than latched: the preference can change under a
+      running app, and both of the things it governs here are decided at the
+      moment a strum arrives. */
+  const lessMotion =
+    typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)')
+      : null;
 
   const recent = new Float64Array(MEDIAN_N);
   const recentSorted = new Float64Array(MEDIAN_N);
@@ -599,6 +669,37 @@ export function createTunerView(): ViewHandle {
      result the player is waiting for. */
   flowEl.setAttribute('aria-hidden', 'true');
 
+  /* The mic's own pulse, beside the sentence that claims it is listening.
+     Five hairlines whose heights ARE the smoothed input level — the newest
+     sample in the middle, the two previous ones spreading outwards, so the
+     room travels through the group instead of blinking in it. Nothing here
+     has a clock: with no signal the bars sit at their floor for ever.
+     Presentational, and never the only channel — the flow line says the same
+     thing in words, and the region below says it out loud. */
+  const levelEl = h('span', 'tv-listen-level');
+  levelEl.setAttribute('aria-hidden', 'true');
+  const levelBars: HTMLElement[] = [];
+  for (let i = 0; i < LEVEL_BARS; i++) {
+    const bar = h('span', 'tv-listen-bar');
+    levelBars.push(bar);
+    levelEl.appendChild(bar);
+  }
+  /* Newest first. Bar i shows history[|i - centre|], which is what makes the
+     group a ripple rather than five copies of one number. */
+  const levelHistory = new Float64Array(LEVEL_LAG + 1);
+  const levelWritten = new Float64Array(LEVEL_BARS).fill(-1);
+
+  /* The capture window, drawn. It exists because the two seconds between
+     "Heard it" and a board full of numbers are otherwise two seconds of a
+     screen that has not moved — the exact complaint this addendum answers.
+     Determinate from end to end: one linear transition sized to the window
+     the recorder is actually filling, so its position is the truth about how
+     much of that window is on disk. */
+  const progressEl = h('div', 'tv-strum-progress');
+  progressEl.setAttribute('aria-hidden', 'true');
+  const progressFill = h('span', 'tv-strum-progress-fill');
+  progressEl.appendChild(progressFill);
+
   const board = h('ul', 'tv-board is-empty');
   /* Explicit, because the list marker is off: without it Safari drops the list
      semantics and the six rows stop being "1 of 6" to a screen reader. */
@@ -610,7 +711,19 @@ export function createTunerView(): ViewHandle {
   const strumMsgTitle = h('p', 'tv-strum-msg-title');
   const strumMsgBody = h('p', 'tv-strum-msg-body');
   const strumMsgHint = h('p', 'tv-strum-msg-hint');
-  strumMsg.append(strumMsgTitle, strumMsgBody, strumMsgHint);
+  /* The way out of a processed capture path, and the only one there is until
+     the native recorder lands: the same app, on a path nothing is allowed to
+     touch. Shown by CSS in the `processed` state alone, so the refusal and the
+     octave-pair message can never grow a button that has nothing to do with
+     them. `target=_blank` with `rel=noopener` because inside the WebView an
+     external https navigation is what hands the URL to the system browser —
+     and because a tuner that navigates ITSELF away mid-session is a tuner that
+     lost your tuning. */
+  const strumOpen = h('a', 'btn btn-primary tv-strum-open', 'Open in browser');
+  strumOpen.href = LIVE_APP_URL;
+  strumOpen.target = '_blank';
+  strumOpen.rel = 'noopener';
+  strumMsg.append(strumMsgTitle, strumMsgBody, strumMsgHint, strumOpen);
 
   /* The board prints transposed names too, so the capo has to be disclosed in
      the card the user is actually looking at — the Single-mode tag is hidden
@@ -661,8 +774,13 @@ export function createTunerView(): ViewHandle {
   );
 
   const strumHead = h('div', 'tv-strum-head');
-  strumHead.append(flowEl, strumCapoTag);
-  strumCard.append(strumHead, board, strumMsg, strumFoot, strumSave, strumCta);
+  /* The ripple belongs to the sentence, not to the row: grouped so it sits
+     against the end of "Listening —…" however wide the capo tag beside it
+     turns out to be. */
+  const flowGroup = h('div', 'tv-flow-group');
+  flowGroup.append(flowEl, levelEl);
+  strumHead.append(flowGroup, strumCapoTag);
+  strumCard.append(strumHead, progressEl, board, strumMsg, strumFoot, strumSave, strumCta);
   strumPanel.appendChild(strumCard);
   el.appendChild(strumPanel);
 
@@ -1143,16 +1261,131 @@ export function createTunerView(): ViewHandle {
     setText(strumLive, text);
   }
 
+  /* ---------- the cycle's own feedback (v2.0.2) ---------- */
+
+  /**
+   * The states in which the mic is open and the next strum would be picked up
+   * on the spot.
+   *
+   * The spec's line is "visible only in the armed state", and `armed` alone is
+   * the wrong reading of it: the board auto-rearms, so after the first strum
+   * of a session the mode sits in `results` (or `refused`) for ever — both of
+   * which print "Strum again any time" and both of which are listening. Gating
+   * the ripple on the literal state showed it once, before the first strum,
+   * and never again for the rest of the session — which is precisely the loop
+   * this addendum exists to acknowledge. What "only armed" excludes is `idle`
+   * (no mic), `analysing` (the level being drawn would be a chord the analyser
+   * has already taken its window from) and `unsupported` (never listens).
+   */
+  const strumWaiting = (s: StrumState): boolean =>
+    s === 'armed' || s === 'results' || s === 'refused';
+
+  /**
+   * One level update from the tap, ~12 times a second. The bars are written
+   * only while the mode is waiting for a strum and only while motion is
+   * wanted, so the callback costs a comparison and returns the rest of the
+   * time — including through the two seconds of a capture, where the ripple is
+   * off screen and whatever it would have shown is not about the room any
+   * more. A room that stays put stops the writes too: a sample that moves no
+   * bar by LEVEL_EPSILON touches no style at all.
+   */
+  function handleLevel(rms: number): void {
+    if (!strumWaiting(strumState) || lessMotion?.matches) return;
+    for (let i = levelHistory.length - 1; i > 0; i--) levelHistory[i] = levelHistory[i - 1];
+    levelHistory[0] = rms;
+    const centre = (LEVEL_BARS - 1) / 2;
+    for (let i = 0; i < LEVEL_BARS; i++) {
+      const v = levelHistory[Math.abs(i - centre)];
+      const scale = LEVEL_FLOOR + (1 - LEVEL_FLOOR) * v;
+      if (Math.abs(scale - levelWritten[i]) < LEVEL_EPSILON) continue;
+      levelWritten[i] = scale;
+      levelBars[i].style.transform = `scaleY(${scale.toFixed(3)})`;
+    }
+  }
+
+  /** Park the ripple at its floor. A mode that has stopped waiting is not
+      hearing anything, and the height it stopped at is not news about the
+      room — so the next state to show the bars finds them at rest rather than
+      holding the last chord's attack. */
+  function restLevel(): void {
+    levelHistory.fill(0);
+    for (let i = 0; i < LEVEL_BARS; i++) {
+      if (levelWritten[i] === LEVEL_FLOOR) continue;
+      levelWritten[i] = LEVEL_FLOOR;
+      levelBars[i].style.transform = `scaleY(${LEVEL_FLOOR})`;
+    }
+  }
+
+  /** Back to empty, with no motion of any kind between where the bar was and
+      zero — a superseded run must not be seen travelling backwards. */
+  function resetProgress(): void {
+    for (const id of progressTimers) window.clearTimeout(id);
+    progressTimers.length = 0;
+    progressFill.style.transition = 'none';
+    progressFill.style.transform = 'scaleX(0)';
+  }
+
+  /**
+   * Run the bar across exactly the window the recorder is filling. Smooth
+   * motion is one linear transition — determinate, driven by the clock the
+   * capture itself runs on, and free of any per-frame work on this thread.
+   *
+   * Under a reduced-motion preference the same window is spent in four steps
+   * instead: style.css cuts every transition to 0.01 ms under that preference
+   * (correctly — a 2.4 s slide IS motion), so a transition would arrive as an
+   * instantly-full bar, which is a lie about the window and a jump besides.
+   */
+  function startProgress(seconds: number): void {
+    resetProgress();
+    // Commit the reset before the run begins, or the two writes coalesce and
+    // the bar transitions from wherever the last strum left it.
+    void progressFill.offsetWidth;
+    if (lessMotion?.matches) {
+      const step = (seconds * 1000) / PROGRESS_STEPS;
+      for (let i = 1; i <= PROGRESS_STEPS; i++) {
+        const at = i / PROGRESS_STEPS;
+        progressTimers.push(
+          window.setTimeout(() => {
+            progressFill.style.transform = `scaleX(${at})`;
+          }, step * i),
+        );
+      }
+      return;
+    }
+    progressFill.style.transition = `transform ${seconds}s linear`;
+    progressFill.style.transform = 'scaleX(1)';
+  }
+
+  /** Everything the mode puts on screen to say "this strum, right now": the
+      old board dimmed out of the way, and the window drawn as it records. */
+  function beginCapture(): void {
+    board.classList.add('is-stale');
+    startProgress(strumCap?.windowSeconds ?? PROGRESS_FALLBACK_S);
+  }
+
+  /** ...and its exit, wherever the capture ends: results, a refusal, a failed
+      analysis, a tuning change, the mode closing. */
+  function endCapture(): void {
+    board.classList.remove('is-stale');
+    resetProgress();
+  }
+
   function setStrumState(next: StrumState): void {
     if (strumState === next) return;
     const previous = strumState;
     strumState = next;
     strumPanel.dataset.state = next;
+    // The dim and the bar belong to the capture, and 'analysing' IS the
+    // capture. Leaving it — with numbers, with a refusal, or with nothing —
+    // ends both in the same style change that turned them on.
+    if (next !== 'analysing') endCapture();
+    if (!strumWaiting(next)) restLevel();
     if (next === 'armed') {
       // Only worth saying when the mode has just become usable — after the
-      // unsupported state, or on the first open. Re-arming after a result is
-      // silent: the result sentence is still the thing being read.
-      if (previous === 'unsupported' || previous === 'idle') {
+      // unsupported state, after the capture-path check, or on the first open.
+      // Re-arming after a result is silent: the result sentence is still the
+      // thing being read.
+      if (previous === 'unsupported' || previous === 'idle' || previous === 'checking') {
         speakStrum('Listening. Strum all strings once.');
       }
     }
@@ -1163,11 +1396,18 @@ export function createTunerView(): ViewHandle {
       of these is an instant text or hidden swap — nothing in this mode
       animates, and nothing in it changes luminance on its own clock. */
   function renderStrum(): void {
-    const blocked = strumState === 'unsupported' || strumState === 'refused';
+    const blocked = strumLatched(strumState) || strumState === 'refused';
     board.hidden = blocked;
     strumMsg.hidden = !blocked;
     let flow: string;
     switch (strumState) {
+      case 'checking':
+        // The one second and a half between the microphone opening and the mode
+        // arming itself, on the platforms where the app has to find out what
+        // the system is doing to the capture first. It plays a tone while this
+        // is on screen, so the screen had better say why.
+        flow = 'Checking the microphone path…';
+        break;
       case 'analysing':
         // Written at the ONSET, not at the delivery — see handleOnset. "Heard
         // it" is the claim that can honestly be made 0.26 s in, and it is the
@@ -1187,6 +1427,7 @@ export function createTunerView(): ViewHandle {
         flow = 'Strum again any time';
         break;
       case 'unsupported':
+      case 'processed':
         flow = 'Strum check unavailable';
         break;
       default:
@@ -1209,6 +1450,30 @@ export function createTunerView(): ViewHandle {
     strumMsgHint.hidden = true;
     speakStrum(
       `Strum check is not reliable for octave-paired tunings yet. ${name} has a pair. Use Single mode.`,
+    );
+  }
+
+  /**
+   * v2.1's capture-path verdict, shown INSTEAD of listening.
+   *
+   * The probe played a tone and got back an envelope the system had been at:
+   * faded, pumped or cancelled. A ringing chord gets the same treatment, and
+   * the strum analyser reads a flattened chord as noise — so no number this
+   * mode could produce here would mean anything, and none is ever produced. The
+   * monophonic tuner is untouched by any of it (a period detector only needs
+   * the zero crossings to stay put), which is why the card sends the player
+   * there as well as to the browser.
+   */
+  function renderProcessed(): void {
+    setText(strumMsgTitle, 'This app’s microphone path is processed by the system');
+    setText(
+      strumMsgBody,
+      'Android is putting noise suppression and automatic gain in front of this app’s microphone, and nothing the app can ask for turns them off. A ringing chord arrives flattened, so Strum check can’t read it here — and it will never show you a number it doesn’t trust. Single mode is unaffected and tunes exactly as it always has. Strum check works in the browser, where the capture is untouched.',
+    );
+    setText(strumMsgHint, '');
+    strumMsgHint.hidden = true;
+    speakStrum(
+      'This app’s microphone path is processed by the system, so Strum check cannot read it here. Single mode still works. Open TrueString in your browser for Strum check.',
     );
   }
 
@@ -1306,6 +1571,10 @@ export function createTunerView(): ViewHandle {
   function handleOnset(): void {
     if (mode !== 'strum' || octaveBlocked || strumBusy) return;
     strumAckAt = performance.now();
+    // Before the state change, so the first paint of "Heard it — reading…"
+    // already carries the dimmed board and an empty bar rather than showing
+    // the previous strum's numbers at full strength for a frame.
+    beginCapture();
     setStrumState('analysing');
   }
 
@@ -1330,7 +1599,11 @@ export function createTunerView(): ViewHandle {
     strumBusy = true;
     const id = ++strumSeq;
     if (strumState !== 'analysing') {
+      // A delivery that reached here without an onset of its own — the ack
+      // hold's whole reason for existing. It gets the same acknowledgement,
+      // and the bar runs from zero rather than picking up a stale position.
       strumAckAt = performance.now();
+      beginCapture();
       setStrumState('analysing');
     }
     const targetFreqs = targetNotes.map((note) => note.freq);
@@ -1364,11 +1637,42 @@ export function createTunerView(): ViewHandle {
     return true;
   }
 
+  /**
+   * v2.1's capture-path probe, and every reason not to run it.
+   *
+   * Returns the verdict, or 'unknown' wherever there is no honest measurement
+   * to be had — which is also what every uncertainty resolves to, because
+   * uncertainty must never take a working mode away from a player. Only a
+   * 'processed' verdict blocks anything.
+   */
+  async function checkCapturePath(capture: MicCapture): Promise<CapturePath> {
+    // Chrome proper is the path every measurement in this repo was taken
+    // through; it is known-good and is never made to listen to a test tone.
+    if (!isProcessedCapturePlatform()) return 'unknown';
+    const known = capturePathVerdict();
+    if (known) return known;
+    // The tone would be played into the metronome, and the metronome would be
+    // played into the envelope. Skip, and ask again next time.
+    if (metronomeSounding || droneSounding) return 'unknown';
+    setStrumState('checking');
+    const verdict = await probeCapturePath(capture);
+    return verdict;
+  }
+
   async function startStrum(): Promise<void> {
     if (strumStarting || strumCap) return;
     if (octaveBlocked) {
       renderUnsupported();
       setStrumState('unsupported');
+      renderStrum();
+      return;
+    }
+    // Already asked, already answered. The verdict is a fact about the device,
+    // so the mic is never opened again to re-learn it.
+    if (capturePathVerdict() === 'processed') {
+      stop();
+      renderProcessed();
+      setStrumState('processed');
       renderStrum();
       return;
     }
@@ -1385,8 +1689,43 @@ export function createTunerView(): ViewHandle {
     // highpass built at the tuning's cutoff never has to ramp there.
     applyAnalysisFloor(shared);
     try {
+      // Opened here rather than inside StrumCapture.start(), because the
+      // capture-path probe has to hear the room through this very graph and has
+      // to answer BEFORE anything starts listening for strums. Permission flows
+      // exactly as it always did — this is the same MicCapture.start().
+      if (!shared.running) await shared.start();
+      micGrantedThisSession = true;
+      if (!visible || mode !== 'strum') {
+        releaseUnadopted(shared);
+        setPhase('idle');
+        return;
+      }
+      // Adopted before the probe: the tone plays for a second and a half, and a
+      // microphone nobody owns for a second and a half is a microphone nobody
+      // closes. `stop()` below can only close the view's own.
+      mic = shared;
+      holdWake('tuner');
+      setPhase('live');
+      const path = await checkCapturePath(shared);
+      if (!visible || mode !== 'strum') {
+        // Somebody left while the tone was playing. Whoever is here now owns
+        // the microphone — hide() has already closed it, Single mode has
+        // already taken it over — so there is nothing to undo.
+        return;
+      }
+      if (path === 'processed') {
+        // No listening, no capture, no numbers. Close the microphone too: a
+        // mode that is showing an explanation instead of running has no reader
+        // on the stream, and leaving the OS indicator lit for it is a lie.
+        stop();
+        renderProcessed();
+        setStrumState('processed');
+        renderStrum();
+        return;
+      }
       const capture = new StrumCapture();
       capture.onOnset = handleOnset;
+      capture.onLevel = handleLevel;
       capture.onStrum = (samples: Float32Array, sampleRate: number): void => {
         void handleStrum(samples, sampleRate);
       };
@@ -1395,28 +1734,26 @@ export function createTunerView(): ViewHandle {
       // opened without them would hand the first strum a window too short for
       // the analyser's last frame.
       await capture.start({ mic: shared, targetFreqs: targetNotes.map((note) => note.freq) });
-      micGrantedThisSession = true;
-      // The mode or the tab may have changed while the permission prompt was
-      // up; a capture nobody is watching is closed on the spot.
+      // The mode or the tab may have changed while the tap was being built; a
+      // capture nobody is watching is closed on the spot. The microphone is the
+      // view's by now, so whoever took over owns it — and closing it here would
+      // take it out from under Single mode.
       if (!visible || mode !== 'strum') {
         capture.onStrum = null;
         capture.onOnset = null;
+        capture.onLevel = null;
         capture.stop();
-        releaseUnadopted(shared);
-        setPhase('idle');
         return;
       }
-      mic = shared;
       strumCap = capture;
-      // Same reason string as Single mode: this is still the tuner holding the
-      // screen awake, and the two modes are never live at once.
-      holdWake('tuner');
-      setPhase('live');
       setStrumState('armed');
     } catch (err) {
       // A stream that opened before something further down failed belongs to
-      // nobody, and nobody would ever close it.
-      releaseUnadopted(shared);
+      // nobody, and nobody would ever close it. One this view had already
+      // adopted — the probe runs after adoption — goes out the same door every
+      // other failed session goes out of.
+      if (shared === mic) stop();
+      else releaseUnadopted(shared);
       showNotice(err);
     } finally {
       strumStarting = false;
@@ -1435,6 +1772,7 @@ export function createTunerView(): ViewHandle {
     if (strumCap) {
       strumCap.onStrum = null;
       strumCap.onOnset = null;
+      strumCap.onLevel = null;
       // The mic is the view's, not the capture's, so this detaches the tap and
       // leaves the stream open for Single mode.
       strumCap.stop();
@@ -1444,8 +1782,13 @@ export function createTunerView(): ViewHandle {
     // Anything still in the worker is now about a microphone that is closed.
     strumSeq++;
     strumBusy = false;
+    // The bar and the dim outlive the state machine on the paths that assign
+    // `strumState` directly (an unsupported tuning), so they are dropped here
+    // as well as in setStrumState.
+    endCapture();
+    restLevel();
     if (mode === 'strum' && (phase === 'live' || phase === 'starting')) setPhase('idle');
-    if (strumState !== 'unsupported') setStrumState('idle');
+    if (!strumLatched(strumState)) setStrumState('idle');
   }
 
   /** Targets moved (tuning, capo or A4): every number on the board was measured
@@ -1455,11 +1798,22 @@ export function createTunerView(): ViewHandle {
   function resetStrum(): void {
     strumSeq++;
     strumBusy = false;
+    // Every number the board is holding was measured against the old targets,
+    // and so was the capture the bar is drawing. Both go at once.
+    endCapture();
     renderBoard();
     // A live capture keeps recording, but the window it records has to follow
     // the new targets — a drop to a bass tuning lengthens it.
     strumCap?.setTargets(targetNotes.map((note) => note.freq));
     const gateChanged = syncOctaveGate();
+    // A processed capture path is a fact about the device, not about the
+    // tuning: new targets do not stop the system mangling the microphone. The
+    // card stays exactly where it is, and nothing re-opens behind it.
+    if (strumState === 'processed') {
+      renderProcessed();
+      renderStrum();
+      return;
+    }
     if (mode !== 'strum') {
       strumState = octaveBlocked ? 'unsupported' : 'idle';
       strumPanel.dataset.state = strumState;
@@ -1525,6 +1879,14 @@ export function createTunerView(): ViewHandle {
         stop();
         renderUnsupported();
         setStrumState('unsupported');
+        renderStrum();
+      } else if (capturePathVerdict() === 'processed') {
+        // Asked and answered earlier in this session. The mode does not open a
+        // microphone it already knows it cannot read a chord through, and does
+        // not play the tone a second time to be told the same thing.
+        stop();
+        renderProcessed();
+        setStrumState('processed');
         renderStrum();
       } else {
         setStrumState('idle');
@@ -1855,7 +2217,7 @@ export function createTunerView(): ViewHandle {
     strumSeq++;
     strumBusy = false;
     clearBoard();
-    if (strumState !== 'unsupported') setStrumState('idle');
+    if (!strumLatched(strumState)) setStrumState('idle');
     setPhase('blocked');
     relax(true);
   }
@@ -1968,6 +2330,18 @@ export function createTunerView(): ViewHandle {
   });
   strumBtn.addEventListener('click', () => {
     setMode('strum');
+  });
+
+  /* The two things in this app that keep making sound after you leave their
+     tab. Only the capture-path probe reads them, and only to decline to run
+     while either is going: its tone would be played into theirs. */
+  const running = (ev: Event): boolean =>
+    (ev as CustomEvent<{ running?: boolean }>).detail?.running === true;
+  window.addEventListener('truestring:metronome-running', (ev: Event) => {
+    metronomeSounding = running(ev);
+  });
+  window.addEventListener('truestring:drone-running', (ev: Event) => {
+    droneSounding = running(ev);
   });
 
   subscribe((next: AppState) => {

@@ -53,6 +53,38 @@ const rms = (x, a, b) => {
   return hi > lo ? Math.sqrt(e / (hi - lo)) : 0;
 };
 
+/**
+ * Where the pluck is, in a clip that may begin with seconds of room.
+ *
+ * `detectOnset()` in strum.ts deliberately takes its reference peak from the
+ * FIRST 0.6 s only, which is exactly right for the buffer strumcapture.ts hands
+ * it (that buffer starts 0.1 s before the attack) and exactly wrong for a voice
+ * memo with a long lead-in: the loudest thing in the first 0.6 s is the room,
+ * and the onset comes back as ~0. A solo clip is one event in a quiet room, so
+ * the honest reference is the WHOLE clip's peak.
+ */
+export function findOnset(x, fs) {
+  const hop = Math.max(1, Math.round(0.005 * fs));
+  const n = Math.floor(x.length / hop);
+  if (n < 4) return 0;
+  const e = new Float64Array(n);
+  let peak = 0;
+  for (let h = 0; h < n; h++) {
+    let s = 0;
+    for (let i = h * hop; i < (h + 1) * hop; i++) s += x[i] * x[i];
+    e[h] = Math.sqrt(s / hop);
+    if (e[h] > peak) peak = e[h];
+  }
+  if (peak <= 0) return 0;
+  let h = 0;
+  while (h < n && e[h] <= 0.25 * peak) h++;
+  if (h >= n) return 0;
+  // walk back to the foot of the attack, so the analysis windows below start
+  // at the pluck and not a quarter of the way up it
+  while (h > 0 && e[h - 1] > 0.04 * peak) h--;
+  return (h * hop) / fs;
+}
+
 /* --------------------------------------------------------------- MPM f0 */
 
 /**
@@ -321,11 +353,79 @@ export function partialEnvelope(x, fs, f, from, to, bw, envFs = 400) {
   const skip = 2 * L; // filter start-up
   const out = [];
   const t = [];
+  const cr = [];
+  const ci = [];
   for (let i = skip; i < n; i += hop) {
     out.push(Math.hypot(fr[i], fi[i]));
+    cr.push(fr[i]);
+    ci.push(fi[i]);
     t.push((i0 + i) / fs);
   }
-  return { env: Float64Array.from(out), t: Float64Array.from(t), fs: fs / hop, groupDelay: L / fs };
+  return {
+    env: Float64Array.from(out),
+    re: Float64Array.from(cr),
+    im: Float64Array.from(ci),
+    t: Float64Array.from(t),
+    fs: fs / hop,
+    groupDelay: L / fs,
+  };
+}
+
+/**
+ * The partial's TRUE frequency, from the slope of its demodulated phase.
+ *
+ * Peak-picking a Hann spectrum measures the composite of the two polarisations
+ * at whatever phase the window happened to catch, which for a 0.5 Hz split and
+ * a 30% partner mode is several cents of bias with a random sign. The phase
+ * slope does not have that problem: the partner mode contributes a BOUNDED
+ * phase wobble (at most arcsin(q) radians), so its contribution to the measured
+ * frequency falls as 1/T, and the dominant mode's winding rate — which is what
+ * "the pitch of the string" means — is what is left. Weighting by |z|^2 is the
+ * ML weighting for a decaying partial: the dead tail weighs nothing.
+ */
+export function phaseFreq(x, fs, f, from, to, bw) {
+  const e = partialEnvelope(x, fs, f, from, to, bw);
+  if (!e || e.env.length < 24) return null;
+  const { env, re, im, t } = e;
+  let peak = 0;
+  for (const v of env) if (v > peak) peak = v;
+  const floor = peak * 0.04;
+  let prev = Math.atan2(im[0], re[0]);
+  let acc = prev;
+  let sw = 0;
+  let sx = 0;
+  let sy = 0;
+  let sxx = 0;
+  let sxy = 0;
+  let used = 0;
+  for (let i = 0; i < env.length; i++) {
+    const ph = Math.atan2(im[i], re[i]);
+    let d = ph - prev;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    acc += d;
+    prev = ph;
+    if (env[i] < floor) continue;
+    const w = env[i] * env[i];
+    const ti = t[i] - t[0];
+    sw += w;
+    sx += w * ti;
+    sy += w * acc;
+    sxx += w * ti * ti;
+    sxy += w * ti * acc;
+    used++;
+  }
+  if (used < 12 || sw <= 0) return null;
+  const den = sw * sxx - sx * sx;
+  if (Math.abs(den) < 1e-18) return null;
+  const slope = (sw * sxy - sx * sy) / den;
+  const df = slope / (2 * Math.PI);
+  // The span the measurement EFFECTIVELY had, after |z|^2 weighting killed the
+  // decayed tail: a uniform window with the same weighted variance. A partial's
+  // frequency precision goes as 1/(f * effSpan), which is what weights the fit.
+  const varT = sxx / sw - Math.pow(sx / sw, 2);
+  const effSpan = 2 * Math.sqrt(3 * Math.max(varT, 1e-9));
+  return { f: f + df, df, used, effSpan, span: t[t.length - 1] - t[0] };
 }
 
 /**
@@ -346,7 +446,7 @@ function solveSym(A, b) {
       for (let j = c; j <= n; j++) M[r][j] -= k * M[c][j];
     }
   }
-  return M.map((row, i) => row[n] / row[i][i]);
+  return M.map((row, i) => row[n] / row[i]);
 }
 
 /**
@@ -414,9 +514,22 @@ function beatFitAt(y, t, rate) {
  * the truth can be evaluated at the same instant.
  */
 export function beatOf(x, fs, f, from, to, bw) {
-  const e = partialEnvelope(x, fs, f, from, to, bw);
-  if (!e || e.env.length < 48) return null;
-  const { env, t: tAbs, fs: efs } = e;
+  const raw = partialEnvelope(x, fs, f, from, to, bw);
+  if (!raw || raw.env.length < 48) return null;
+  const efs = raw.fs;
+  // TRUNCATE where the partial has decayed into the noise. Past that point the
+  // flattening below divides a constant noise level by a shrinking exponential,
+  // so the dead tail explodes and takes the fit with it — which is what made a
+  // fast-decaying treble partial read a depth it never had.
+  let peak = 0;
+  const head = Math.max(8, Math.round(raw.env.length * 0.15));
+  for (let i = 0; i < head; i++) peak = Math.max(peak, raw.env[i]);
+  const floor = peak * 0.10;
+  let last = raw.env.length - 1;
+  while (last > 0 && raw.env[last] < floor) last--;
+  if (last < 48) return null;
+  const env = raw.env.slice(0, last + 1);
+  const tAbs = raw.t.slice(0, last + 1);
   const span = env.length / efs;
   const t = Float64Array.from(tAbs, (v) => v - tAbs[0]);
 
@@ -452,10 +565,12 @@ export function beatOf(x, fs, f, from, to, bw) {
   // 2. rate: the modulation frequency that explains most of env^2. Below ~1.2
   //    cycles per window a "beat" is indistinguishable from the decay, so that
   //    is the floor and `cycles` says when to believe the answer.
+  const winFrom = tAbs[0];
+  const winTo = tAbs[tAbs.length - 1];
   const lo = Math.max(0.1, 1.2 / span);
   const hi = Math.min(bw * 0.5, efs / 3, 40);
   if (hi <= lo * 1.05) {
-    return { rate: NaN, depth: NaN, cycles: 0, span, tCentre, tau: slope < 0 ? -1 / slope : Infinity };
+    return { rate: NaN, depth: NaN, cycles: 0, span, tCentre, winFrom, winTo, tau: slope < 0 ? -1 / slope : Infinity };
   }
   let best = null;
   const coarse = 160;
@@ -465,7 +580,7 @@ export function beatOf(x, fs, f, from, to, bw) {
     if (fit && (!best || fit.M > best.M)) best = { rate: r, ...fit };
   }
   if (!best) {
-    return { rate: NaN, depth: NaN, cycles: 0, span, tCentre, tau: slope < 0 ? -1 / slope : Infinity };
+    return { rate: NaN, depth: NaN, cycles: 0, span, tCentre, winFrom, winTo, tau: slope < 0 ? -1 / slope : Infinity };
   }
   // refine
   const stepLog = Math.log(hi / lo) / (coarse - 1);
@@ -483,6 +598,8 @@ export function beatOf(x, fs, f, from, to, bw) {
     cycles: best.rate * span,
     span,
     tCentre,
+    winFrom,
+    winTo,
     tau: slope < 0 ? -1 / slope : Infinity,
   };
 }
@@ -495,8 +612,8 @@ export function beatOf(x, fs, f, from, to, bw) {
  * (used only to report cents; every fit is seeded from the audio itself).
  */
 export async function analyzeSolo(x, fs, { target = null, name = '?', fMax = null } = {}) {
-  const { probe } = await loadModules();
-  const onset = probe.detectOnset(x, fs);
+  await loadModules();
+  const onset = findOnset(x, fs);
   const dur = x.length / fs;
 
   // ---- room floor and clip SNR
@@ -525,10 +642,11 @@ export async function analyzeSolo(x, fs, { target = null, name = '?', fMax = nul
   // ---- high-resolution comb over up to three windows
   const ceilHz = fMax || Math.min(0.45 * fs, 6000);
   const avail = dur - onset - 0.06;
-  // ~1.4 s of Hann: 0.7 Hz bins at 48 kHz. Long enough that the exact-Hann
-  // interpolator resolves a partial to a hundredth of a bin, short enough that
-  // the high partials have not decayed away inside it.
-  let N = 1 << Math.ceil(Math.log2(0.7 * fs));
+  // ~0.7 s of Hann. Longer resolves finer bins but a treble partial whose decay
+  // constant is 0.3 s has died inside the window, and the stationary-sinusoid
+  // peak interpolator then reads it wrong — which lands straight on B, the one
+  // parameter with a k^2 lever on the fit.
+  let N = 1 << Math.round(Math.log2(0.7 * fs));
   while (N / fs > avail * 0.6 && N > 8192) N >>= 1;
   const offsets = [0.06, 0.06 + N / fs / 2, 0.06 + N / fs].filter((o) => onset + o + N / fs <= dur);
   const wins = [];
@@ -537,25 +655,41 @@ export async function analyzeSolo(x, fs, { target = null, name = '?', fMax = nul
     if (got) wins.push({ off, ...got });
   }
   if (!wins.length) return { name, ok: false, reason: 'no usable spectrum window', onset, snrDb, dur };
+  const perWindow = wins.map((w) => ({ off: w.off, f0: w.fit.f0, B: w.fit.B, resid: w.fit.residCents }));
+  const fftFit = wins[0].fit;
 
-  // POOL the windows into one fit rather than taking a median of three fits.
-  // Each window catches the polarisation beat at a different phase, so a
-  // partial's position error is roughly independent between them; pooling
-  // averages that away where a median of whole fits cannot.
-  const pooled = [];
-  for (const w of wins) for (const p of w.table) pooled.push({ ...p, w: p.w / wins.length });
-  const joint = fitCombRobust(pooled) || wins[0].fit;
+  // ---- refine every partial by its own PHASE SLOPE, then refit the comb.
+  // This is the measurement the whole calibration turns on, so it is made the
+  // way that is right rather than the way that is cheap.
+  const table = wins[0].table;
+  const seedF0 = fftFit.f0;
+  const bw = Math.min(0.45 * seedF0, 45);
+  const phWidth = Math.min(4.0, Math.max(0.9, dur - (onset + 0.10) - 0.05));
+  for (const p of table) {
+    const ph = phaseFreq(x, fs, p.f, onset + 0.10, onset + 0.10 + phWidth, bw);
+    if (ph && Math.abs(ph.df) < 0.4 * bw) {
+      p.fPhase = ph.f;
+      p.effSpan = ph.effSpan;
+      // 1/variance: a partial's cent error goes as 1/(f * effSpan)
+      p.wPhase = Math.min(4e4, Math.pow(ph.f * ph.effSpan, 2)) * Math.min(1, p.snr / 20);
+    }
+  }
+  const phasePts = table
+    .filter((p) => p.fPhase && p.wPhase > 0)
+    .map((p) => ({ k: p.k, f: p.fPhase, w: p.wPhase, snr: p.snr }));
+  const joint = (phasePts.length >= 4 ? fitCombRobust(phasePts) : null) || fftFit;
   const f0 = joint.f0;
   const B = joint.B;
   const residCents = joint.residCents;
-  const perWindow = wins.map((w) => ({ off: w.off, f0: w.fit.f0, B: w.fit.B, resid: w.fit.residCents }));
-  // envelope + partial table from the FIRST window (loudest, least decayed)
-  const table = wins[0].table;
+
   const env = fitEnvelope(table);
   const partials = table.map((p) => ({
     k: p.k,
-    f: p.f,
-    devCents: p.dev,
+    f: p.fPhase ?? p.f,
+    fFft: p.f,
+    fPhase: p.fPhase ?? NaN,
+    devCents: cents(p.fPhase ?? p.f, partialFreq(f0, B, p.k)),
+    devFftCents: p.dev,
     snrDb: 20 * Math.log10(p.snr),
     relDb: 20 * Math.log10(p.amp / (table[0]?.amp || p.amp)),
   }));
@@ -567,16 +701,16 @@ export async function analyzeSolo(x, fs, { target = null, name = '?', fMax = nul
   // divided by k — and the high partials are the measurable ones, because they
   // beat k times faster and a 3 s clip only resolves a beat it can complete.
   const beats = [];
-  const bw = Math.min(0.45 * f0, 45);
   for (const p of table.slice(0, 10)) {
     if (p.snr < 8) continue;
-    const width = Math.min(3.0, Math.max(1.2, dur - (onset + 0.10) - 0.05));
-    const b = beatOf(x, fs, p.f, onset + 0.10, onset + 0.10 + width, bw);
+    const b = beatOf(x, fs, p.fPhase ?? p.f, onset + 0.10, onset + 0.10 + phWidth, bw);
     if (b && isFinite(b.rate)) {
-      beats.push({ k: p.k, f: p.f, snrDb: 20 * Math.log10(p.snr), splitHz1: b.rate / p.k, ...b });
+      beats.push({ k: p.k, f: p.fPhase ?? p.f, snrDb: 20 * Math.log10(p.snr), splitHz1: b.rate / p.k, ...b });
     }
   }
-  const good = beats.filter((b) => b.cycles >= 1.8 && isFinite(b.depth));
+  // A beat is only believable once the clip contains a couple of whole cycles
+  // of it AND the two-mode model actually explains the modulation.
+  const good = beats.filter((b) => b.cycles >= 2.0 && b.r2 >= 0.5 && isFinite(b.depth));
   const primary = good[0] || beats.find((b) => isFinite(b.depth)) || null;
   const splitHz1 = good.length ? medianOf(good.map((b) => b.splitHz1)) : NaN;
 
@@ -596,6 +730,8 @@ export async function analyzeSolo(x, fs, { target = null, name = '?', fMax = nul
     residCents,
     nWindows: wins.length,
     perWindow,
+    f0Fft: fftFit.f0,
+    bFft: fftFit.B,
     partialsUsed: joint.used ?? NaN,
     partialsDropped: joint.dropped ?? NaN,
     fftN: N,

@@ -662,8 +662,13 @@
 /* Condition 2 never opens the mic, so the start overlay has nothing to offer
    here: left in, it covered the very message explaining why the mode is not
    running, and tapping it did nothing at all. Withdrawing it also takes the
-   button out of the tab order, so the keyboard cannot reach a dead control. */
-.tv-strum[data-state="unsupported"] .tv-cta {
+   button out of the tab order, so the keyboard cannot reach a dead control.
+
+   v2.1's processed capture path is the same shape of state — an explanation
+   shown INSTEAD of listening — and gets the same treatment for the same
+   reason: there is nothing a "Start listening" button could start. */
+.tv-strum[data-state="unsupported"] .tv-cta,
+.tv-strum[data-state="processed"] .tv-cta {
   display: none;
 }
 
@@ -910,6 +915,27 @@
   color: var(--amber);
 }
 
+/* ---------- the way out of a processed capture path (v2.1) ---------- */
+
+/* The message block's only control, and only in the one state that has
+   somewhere to send you. Held out of the flow of every other message state by
+   the selector rather than by a `hidden` the view has to remember to set, so a
+   refusal can never sprout an "Open in browser" button.
+
+   `justify-self: start` because the block is a grid: left to itself the button
+   would stretch the full card width and read as the mode's primary action
+   rather than as its escape hatch. */
+.tv-strum-open {
+  display: none;
+  justify-self: start;
+  margin-top: 6px;
+  text-decoration: none;
+}
+
+.tv-strum[data-state="processed"] .tv-strum-open {
+  display: inline-flex;
+}
+
 .tv-strum-foot {
   margin: 0;
   font-size: 11.5px;
@@ -1005,4 +1031,128 @@
   min-height: 44px;
   font-size: 12.5px;
   color: var(--muted);
+}
+
+/* ==========================================================================
+   v2.0.2 — the strum cycle, made visible
+
+   Strum, adjust, strum again: for two and a half seconds of every lap the
+   board is showing the LAST strum's numbers and nothing on screen says a new
+   one has been picked up. Three additions answer that, and all three obey the
+   same rule as the needle — either they are driven by the signal or they are
+   determinate. Nothing in here has a clock of its own to blink on.
+   ========================================================================== */
+
+/* The flow line and the ripple are one phrase, so they are one flex item; the
+   capo tag keeps the far end of the header to itself. */
+.tv-flow-group {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Inside the group the sentence must NOT grow, or it pushes the ripple across
+   the card and away from the words it belongs to. Overrides the header rule
+   above at equal specificity, by order. */
+.tv-flow-group .tv-flow {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* ---------- the listening ripple ---------- */
+
+/* Five hairlines that ARE the input level — same amber, same 1px vocabulary as
+   the zero mark on the bars.
+
+   On screen in every state where the mic is open and the next strum would be
+   picked up: 'armed' before the first one, and 'results'/'refused' for the
+   whole rest of the session, since the board auto-rearms and never returns to
+   'armed'. Off in 'idle' (no mic), in 'analysing' (it would be describing a
+   chord whose window is already recorded) and in 'unsupported' (never
+   listens). */
+.tv-listen-level {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  height: 12px;
+}
+
+.tv-strum[data-state="armed"] .tv-listen-level,
+.tv-strum[data-state="results"] .tv-listen-level,
+.tv-strum[data-state="refused"] .tv-listen-level {
+  display: inline-flex;
+}
+
+.tv-listen-bar {
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--amber);
+  opacity: 0.55;
+  /* Scale only: no layout, no luminance, and a silent room still shows five
+     dots rather than an empty gap that reads as "not running". */
+  transform: scaleY(0.16);
+  transform-origin: 50% 50%;
+  /* The level lands ~12 times a second; this walks between two samples so the
+     group breathes with the room instead of stepping through it. Sized under
+     the update interval, so it is interpolation and never a queue. */
+  transition: transform 90ms linear;
+}
+
+/* ---------- the capture progress ---------- */
+
+/* A 3px track under the flow line, holding its space at all times: appearing
+   and disappearing between strums would shove the board 13px down the card on
+   every lap. Only its ink comes and goes, and only with the state. */
+.tv-strum-progress {
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.34);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  opacity: 0;
+}
+
+.tv-strum[data-state="analysing"] .tv-strum-progress {
+  opacity: 1;
+}
+
+/* Grown left-to-right by the view: one transition sized to the exact window
+   the recorder is filling, so the position is a fact about the capture rather
+   than a spinner's guess. The transform is written inline — the transition
+   with it — because only the view knows how long the window is. */
+.tv-strum-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--amber);
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+}
+
+/* ---------- the superseded board ---------- */
+
+/* From the onset until the new numbers land, the old ones step back. A single
+   static opacity change held for the whole capture — a state, not a blink —
+   and the one thing that stops a player reading the previous strum's board as
+   the answer to the strum they just played. */
+.tv-board.is-stale {
+  opacity: 0.45;
+}
+
+/* ---------- motion preferences ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  /* Continuous signal-driven motion is exactly what this asks to be spared,
+     and the ripple is nothing but that. It goes; the flow line already says
+     "Listening" in words, which is the channel that was always authoritative.
+     The progress bar stays — style.css cuts its transition to nothing, so the
+     view fills it in four steps instead (see startProgress) — and so does the
+     stale dim, which never moved in the first place. */
+  .tv-listen-level {
+    display: none !important;
+  }
 }

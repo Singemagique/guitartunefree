@@ -33,6 +33,7 @@ export const REPO = join(HERE, '..', '..');
 export const OUT = join(HERE, '.build');
 export const SRC_STRUM = join(REPO, 'src', 'audio', 'strum.ts');
 export const SRC_PITCH = join(REPO, 'src', 'audio', 'pitch.ts');
+export const SRC_CAPTURE = join(REPO, 'src', 'audio', 'strumcapture.ts');
 
 function newest(...files) {
   let t = 0;
@@ -114,7 +115,36 @@ function makeProbe(clean) {
 }
 
 /**
- * Build (or reuse) the three artefacts. Returns their file: URLs.
+ * `StrumRecorder` in src/audio/strumcapture.ts is deliberately pure — "no Web
+ * Audio in sight so it can be driven from a test harness sample-for-sample" —
+ * but the module graph above it is not: strumcapture imports mic.ts, which
+ * imports context.ts, which registers a `visibilitychange` listener at module
+ * scope. Nothing in that path is CALLED here (MicCapture is never constructed),
+ * so the smallest honest fix is a two-property DOM stand-in ahead of the
+ * bundle. The recorder's own code is untouched.
+ */
+const CAPTURE_SHIM = `
+globalThis.document ??= { addEventListener() {}, removeEventListener() {}, visibilityState: 'visible' };
+globalThis.AudioContext ??= class { constructor() { throw new Error('AudioContext is not available in Node — the calibration only drives StrumRecorder.'); } };
+`;
+
+async function esbuildBundle(entry) {
+  const esbuild = await import('esbuild');
+  const r = await esbuild.build({
+    entryPoints: [entry],
+    bundle: true,
+    write: false,
+    format: 'esm',
+    target: 'es2022',
+    platform: 'neutral',
+    keepNames: true,
+    logLevel: 'silent',
+  });
+  return r.outputFiles[0].text;
+}
+
+/**
+ * Build (or reuse) the artefacts. Returns their file: URLs.
  * Rebuilds whenever a source file or this script is newer than the output.
  */
 export async function buildAll({ force = false } = {}) {
@@ -122,23 +152,23 @@ export async function buildAll({ force = false } = {}) {
   const clean = join(OUT, 'strum.clean.mjs');
   const probe = join(OUT, 'strum.probe.mjs');
   const pitch = join(OUT, 'pitch.mjs');
-  const stale =
-    force ||
-    !existsSync(clean) ||
-    !existsSync(probe) ||
-    !existsSync(pitch) ||
-    newest(SRC_STRUM, SRC_PITCH, join(HERE, 'bundle.mjs')) > newest(clean, probe, pitch);
+  const capture = join(OUT, 'capture.mjs');
+  const srcNewest = newest(SRC_STRUM, SRC_PITCH, SRC_CAPTURE, join(HERE, 'bundle.mjs'));
+  const outs = [clean, probe, pitch, capture];
+  const stale = force || outs.some((f) => !existsSync(f)) || srcNewest > newest(...outs.filter(existsSync));
 
   if (stale) {
     const strumJs = await esbuildTransform(SRC_STRUM);
     writeFileSync(clean, strumJs);
     writeFileSync(probe, makeProbe(strumJs));
     writeFileSync(pitch, await esbuildTransform(SRC_PITCH));
+    writeFileSync(capture, CAPTURE_SHIM + (await esbuildBundle(SRC_CAPTURE)));
   }
   return {
     clean: pathToFileURL(clean).href,
     probe: pathToFileURL(probe).href,
     pitch: pathToFileURL(pitch).href,
+    capture: pathToFileURL(capture).href,
     rebuilt: stale,
   };
 }
@@ -148,12 +178,13 @@ let cached = null;
 export async function loadModules(opts) {
   if (cached) return cached;
   const urls = await buildAll(opts);
-  const [clean, probe, pitch] = await Promise.all([
+  const [clean, probe, pitch, capture] = await Promise.all([
     import(urls.clean),
     import(urls.probe),
     import(urls.pitch),
+    import(urls.capture).catch((e) => ({ error: String(e.message || e) })),
   ]);
-  cached = { clean, probe, pitch, urls };
+  cached = { clean, probe, pitch, capture, urls };
   return cached;
 }
 
