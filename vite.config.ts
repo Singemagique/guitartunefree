@@ -7,6 +7,7 @@ export default defineConfig({
     assetsInlineLimit: 8192,
   },
   server: {
-    port: 5173,
+    // The preview harness assigns a port via PORT; 5173 is the bare-`npm run dev` default.
+    port: Number(process.env.PORT) || 5173,
   },
 });
