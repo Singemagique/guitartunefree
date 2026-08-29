@@ -4,7 +4,7 @@ Any common format (WAV/M4A/MP4 voice memo is fine), phone mic at normal playing 
 
 **Essential (settles the science):**
 1. Each open string plucked ALONE, ~4 s of ring — six clips, standard tuning. Right before recording each, note what the app's Single tuner reads for it (or just tune to 0 first): these are the ground truth.
-2. Five down-strums of all six open strings, medium strength, recorded within minutes of (1) so the tuning hasn't drifted.
+2. Five down-strums of all six open strings, medium strength, recorded within minutes of (1) so the tuning hasn't drifted. **Record all five as ONE continuous clip, strumming every ~3 seconds** — this also reproduces the observed "reads all strings at first, then only one" behaviour so we can see what changes between strums.
 3. The low E plucked alone twice, ~6 s each: once picking parallel to the soundboard, once perpendicular. This measures the "polarisation" behaviour every accuracy number depends on.
 
 **Valuable if you have the patience:**
