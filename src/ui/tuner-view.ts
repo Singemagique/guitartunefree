@@ -193,6 +193,31 @@ function medianOf(buf: Float64Array, scratch: Float64Array, count: number): numb
   return scratch[(count - 1) >> 1];
 }
 
+/** 16-bit PCM WAV from a mono float capture — for the beta's debug export. */
+function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
+  const out = new ArrayBuffer(44 + samples.length * 2);
+  const v = new DataView(out);
+  const str = (o: number, t: string) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) {
+    const c = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(44 + i * 2, Math.round(c * 32767), true);
+  }
+  return out;
+}
+
+function saveBlob(blob: Blob, name: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 function centsToDeg(cents: number): number {
   return (clamp(cents, -RANGE_CENTS, RANGE_CENTS) / RANGE_CENTS) * SWEEP_DEG;
 }
@@ -598,6 +623,25 @@ export function createTunerView(): ViewHandle {
     'tv-strum-foot',
     'Validated on synthetic strums; real-guitar calibration in progress.',
   );
+  /* Beta diagnostics: the board can only be tuned against what the DEVICE
+     heard, and a phone's capture path is not what a voice recorder hears.
+     Kept in memory only until saved; one capture, overwritten per strum. */
+  let lastCapture: { samples: Float32Array; sampleRate: number } | null = null;
+  const strumSave = h('button', 'btn btn-ghost tv-strum-save', 'Save last strum (debug)');
+  strumSave.type = 'button';
+  strumSave.hidden = true;
+  strumSave.addEventListener('click', () => {
+    if (!lastCapture) return;
+    const wav = encodeWav(lastCapture.samples, lastCapture.sampleRate);
+    const blob = new Blob([wav], { type: 'audio/wav' });
+    const file = new File([blob], `strum-debug-${Date.now()}.wav`, { type: 'audio/wav' });
+    const nav = navigator as Navigator & { canShare?: (d: { files: File[] }) => boolean };
+    if (nav.canShare?.({ files: [file] }) && navigator.share) {
+      void navigator.share({ files: [file], title: 'TrueString strum capture' }).catch(() => saveBlob(blob, file.name));
+      return;
+    }
+    saveBlob(blob, file.name);
+  });
 
   /* The same overlay as Single mode, in the card that owns it. Both are inside
      containers that the mode switch hides outright, so the shared
@@ -618,7 +662,7 @@ export function createTunerView(): ViewHandle {
 
   const strumHead = h('div', 'tv-strum-head');
   strumHead.append(flowEl, strumCapoTag);
-  strumCard.append(strumHead, board, strumMsg, strumFoot, strumCta);
+  strumCard.append(strumHead, board, strumMsg, strumFoot, strumSave, strumCta);
   strumPanel.appendChild(strumCard);
   el.appendChild(strumPanel);
 
@@ -1295,6 +1339,8 @@ export function createTunerView(): ViewHandle {
       if (id !== strumSeq || mode !== 'strum') return;
       await settleAck();
       if (id !== strumSeq || mode !== 'strum') return;
+      lastCapture = { samples, sampleRate };
+      strumSave.hidden = false;
       applyStrumResult(res);
     } catch {
       if (id !== strumSeq || mode !== 'strum') return;
