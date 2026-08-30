@@ -9,6 +9,7 @@ import { MIN_FREQ, PitchDetector } from '../audio/pitch';
 import type { StrumResult, StrumStringResult } from '../audio/strum';
 import { hasOctavePair } from '../audio/strum';
 import { StrumCapture, analyzeStrumAsync } from '../audio/strumcapture';
+import { NativeStrumCapture, isNativeCaptureAvailable } from '../audio/nativecapture';
 import type { CapturePath } from '../audio/captureprobe';
 import {
   capturePathVerdict,
@@ -488,7 +489,14 @@ export function createTunerView(): ViewHandle {
   /** Not persisted: Single is what this tab is. */
   let mode: Mode = 'single';
   let strumState: StrumState = 'idle';
-  let strumCap: StrumCapture | null = null;
+  /**
+   * Either capture, and the view cannot tell them apart: NativeStrumCapture
+   * (v2.1, the APK) feeds the very same StrumRecorder from the native stream
+   * and carries the same onStrum / onOnset / onLevel / windowSeconds surface,
+   * so every flow state, every acknowledgement and every progress run below is
+   * written once and runs on both.
+   */
+  let strumCap: StrumCapture | NativeStrumCapture | null = null;
   let strumStarting = false;
   /** Bumped on every analysis AND on every stop, so a result that arrives after
       the board has moved on — a tuning change, a mode switch, hide() — is
@@ -1659,12 +1667,79 @@ export function createTunerView(): ViewHandle {
     return verdict;
   }
 
+  /**
+   * v2.1's native capture path (the APK, from this version on).
+   *
+   * There is no probe here and no `getUserMedia` here: the plugin opens the
+   * least-processed input the device has and streams PCM straight to
+   * NativeStrumCapture, which runs the identical recorder. The probe exists to
+   * discover a mangled capture path — a question with an answer that no longer
+   * matters once the app can simply not use that path.
+   */
+  async function startNativeStrum(): Promise<void> {
+    // Android promises nothing about two capture clients in one process, and
+    // Single mode may have left the WebView's stream open on the way in. It
+    // goes before AudioRecord opens — and this also drops the wake lock, which
+    // is re-held below once the native session is actually running.
+    stop();
+    strumStarting = true;
+    setPhase('starting');
+    syncStartBtn();
+    const capture = new NativeStrumCapture();
+    capture.onOnset = handleOnset;
+    capture.onLevel = handleLevel;
+    capture.onStrum = (samples: Float32Array, sampleRate: number): void => {
+      void handleStrum(samples, sampleRate);
+    };
+    const release = (): void => {
+      capture.onStrum = null;
+      capture.onOnset = null;
+      capture.onLevel = null;
+      capture.stop();
+    };
+    try {
+      // The band the web path would have been built at, so both hear the same
+      // one: the highpass sits just under the tuning's lowest string.
+      applyAnalysisFloor(null);
+      await capture.start({
+        targetFreqs: targetNotes.map((note) => note.freq),
+        highpassHz: analysisFloorHz,
+      });
+      // RECORD_AUDIO is one grant: having it for AudioRecord is having it for
+      // getUserMedia, which is what Single mode will ask for on the way back.
+      micGrantedThisSession = true;
+      if (!visible || mode !== 'strum') {
+        release();
+        setPhase('idle');
+        return;
+      }
+      strumCap = capture;
+      holdWake('tuner');
+      setPhase('live');
+      setStrumState('armed');
+    } catch (err) {
+      release();
+      showNotice(err);
+    } finally {
+      strumStarting = false;
+      syncStartBtn();
+    }
+  }
+
   async function startStrum(): Promise<void> {
     if (strumStarting || strumCap) return;
     if (octaveBlocked) {
       renderUnsupported();
       setStrumState('unsupported');
       renderStrum();
+      return;
+    }
+    // The native recorder, where there is one, is preferred unconditionally: it
+    // is the capture path the analyser was measured on, and the probe's whole
+    // subject — what the system does to the WebView's microphone — stops being
+    // a question the moment the app stops using it.
+    if (isNativeCaptureAvailable()) {
+      await startNativeStrum();
       return;
     }
     // Already asked, already answered. The verdict is a fact about the device,
@@ -1880,7 +1955,7 @@ export function createTunerView(): ViewHandle {
         renderUnsupported();
         setStrumState('unsupported');
         renderStrum();
-      } else if (capturePathVerdict() === 'processed') {
+      } else if (!isNativeCaptureAvailable() && capturePathVerdict() === 'processed') {
         // Asked and answered earlier in this session. The mode does not open a
         // microphone it already knows it cannot read a chord through, and does
         // not play the tone a second time to be told the same thing.
@@ -1928,6 +2003,10 @@ export function createTunerView(): ViewHandle {
       }
       micFloorHz = applied;
     }
+    // The native capture runs the same two biquads in JS (v2.1), so the band
+    // moves with the tuning there too. Idempotent, hence ahead of the fence
+    // below: a floor that did not change is a no-op on both sides.
+    if (strumCap instanceof NativeStrumCapture) strumCap.setAnalysisFloor(applied);
     if (applied === analysisFloorHz) return;
     analysisFloorHz = applied;
     subBandHz = Math.max(MIN_FREQ, applied * SUB_BAND_RATIO);

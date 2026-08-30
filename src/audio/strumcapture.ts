@@ -19,9 +19,11 @@ import { pickN, type StrumResult } from './strum';
 /** Audio ahead of the attack, so the analyser's own onset search has runway. */
 const PRE_ROLL_S = 0.1;
 /** Post-onset audio for a 16384-point analysis (0.035 + 1.21 + 0.341 + slack). */
-const WINDOW_SHORT_S = 2.1;
-/** ...and for 32768, which every target below ~82 Hz at 48 kHz asks for. */
-const WINDOW_LONG_S = 2.4;
+export const WINDOW_SHORT_S = 2.1;
+/** ...and for 32768, which every target below ~82 Hz at 48 kHz asks for.
+    Exported for the native capture path (v2.1), which builds the same recorder
+    from a chunk stream and has to answer `windowSeconds` before one exists. */
+export const WINDOW_LONG_S = 2.4;
 /** Slack in the ring on top of pre-roll + the longest window. */
 const RING_SLACK_S = 0.6;
 
