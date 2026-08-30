@@ -1,6 +1,6 @@
 # Strum check — real-audio calibration report
 
-Generated 2026-08-30T20:20:11.312Z in 136.2 s.
+Generated 2026-08-30T20:22:36.847Z in 136.3 s.
 
 **Source:** research/recordings/ (19 files)
 **Clips folder:** `I:\Claude\guitartunefree\research\recordings`
@@ -157,7 +157,7 @@ held it back, and "achieved / needs" is the shortfall in that term's own units.
 | 4 | 9.20 s | yes | 6/6 | — | -3.2 -2.1 +0.1 -2.8 -3.8 -0.6 |
 | 5 | 12.07 s | yes | 6/6 | — | -3.4 -2.1 +0.3 -2.3 -3.8 -0.3 |
 
-**Strum 1** at 0.13 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 73 ms
+**Strum 1** at 0.13 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 74 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -196,7 +196,7 @@ held it back, and "achieved / needs" is the shortfall in that term's own units.
 
 
 
-**Strum 4** at 9.20 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 38 ms
+**Strum 4** at 9.20 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 35 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -209,7 +209,7 @@ held it back, and "achieved / needs" is the shortfall in that term's own units.
 
 
 
-**Strum 5** at 12.07 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 32 ms
+**Strum 5** at 12.07 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 33 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -230,7 +230,7 @@ held it back, and "achieved / needs" is the shortfall in that term's own units.
 | 2 | 5.95 s | yes | 6/6 | — | -22.9 -0.9 +1.5 -0.8 -21.2 +0.3 |
 | 3 | 11.53 s | yes | 6/6 | — | -22.3 -1.1 +1.3 -0.8 -20.9 +0.4 |
 
-**Strum 1** at 0.26 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 57 ms
+**Strum 1** at 0.26 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 56 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -243,7 +243,7 @@ held it back, and "achieved / needs" is the shortfall in that term's own units.
 
 
 
-**Strum 2** at 5.95 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 36 ms
+**Strum 2** at 5.95 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 37 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -286,7 +286,7 @@ captured by the app; N=16384, 9 frames, 5/5 confirmed, 33 ms
 
 **`strum-muted-2.wav`** — muted (B3 muted)
 
-captured by the app; N=16384, 9 frames, 5/5 confirmed, 34 ms
+captured by the app; N=16384, 9 frames, 5/5 confirmed, 35 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -316,7 +316,7 @@ captured by the app; N=16384, 9 frames, 5/5 confirmed, 32 ms
 
 **`strum-muted-4.wav`** — muted (D3 muted)
 
-captured by the app; N=16384, 9 frames, 5/5 confirmed, 31 ms
+captured by the app; N=16384, 9 frames, 5/5 confirmed, 32 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -331,7 +331,7 @@ captured by the app; N=16384, 9 frames, 5/5 confirmed, 31 ms
 
 **`strum-muted-5.wav`** — muted (A2 muted)
 
-captured by the app; N=16384, 9 frames, 5/5 confirmed, 33 ms
+captured by the app; N=16384, 9 frames, 5/5 confirmed, 32 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -346,7 +346,7 @@ captured by the app; N=16384, 9 frames, 5/5 confirmed, 33 ms
 
 **`strum-muted-6.wav`** — muted (E2 muted)
 
-captured by the app; N=16384, 9 frames, 5/5 confirmed, 31 ms
+captured by the app; N=16384, 9 frames, 5/5 confirmed, 32 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -367,7 +367,7 @@ captured by the app; N=16384, 9 frames, 5/5 confirmed, 31 ms
 | 2 | 4.35 s | yes | 6/6 | — | -11.8 -1.7 +0.5 -1.3 -3.4 +0.3 |
 | 3 | 8.55 s | yes | 6/6 | — | -12.7 -1.9 +0.2 -1.5 -3.6 +0.1 |
 
-**Strum 1** at 0.37 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 53 ms
+**Strum 1** at 0.37 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 52 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -393,7 +393,7 @@ captured by the app; N=16384, 9 frames, 5/5 confirmed, 31 ms
 
 
 
-**Strum 3** at 8.55 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 31 ms
+**Strum 3** at 8.55 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 32 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -414,7 +414,7 @@ captured by the app; N=16384, 9 frames, 5/5 confirmed, 31 ms
 | 2 | 4.25 s | yes | 6/6 | — | -11.6 -1.9 +0.2 -1.6 -2.6 +0.4 |
 | 3 | 8.94 s | yes | 6/6 | — | -11.8 -1.8 +0.4 -1.7 -2.9 -0.2 |
 
-**Strum 1** at 0.18 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 32 ms
+**Strum 1** at 0.18 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 33 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
