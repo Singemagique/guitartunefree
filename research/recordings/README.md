@@ -1,15 +1,22 @@
 # Real-guitar recordings for strum-check calibration
 
-Any common format (WAV/M4A/MP4 voice memo is fine), phone mic at normal playing distance, quiet room unless stated. Drop the files in this folder — names don't matter. Total time: about 10 minutes.
+Status: `5strum.wav` received — it validated the analyzer (30/30 readings) and found + fixed the onset-detector bug. The clips below complete the calibration. WAV preferred (a voice-recorder app is perfect), 44.1 or 48 kHz, phone at your normal playing distance, quiet room unless stated. **Use these exact filename prefixes** so the pipeline classifies them automatically; drop everything in this folder.
 
-**Essential (settles the science):**
-1. Each open string plucked ALONE, ~4 s of ring — six clips, standard tuning. Right before recording each, note what the app's Single tuner reads for it (or just tune to 0 first): these are the ground truth.
-2. Five down-strums of all six open strings, medium strength, recorded within minutes of (1) so the tuning hasn't drifted. **Record all five as ONE continuous clip, strumming every ~3 seconds** — this also reproduces the observed "reads all strings at first, then only one" behaviour so we can see what changes between strums.
-3. The low E plucked alone twice, ~6 s each: once picking parallel to the soundboard, once perpendicular. This measures the "polarisation" behaviour every accuracy number depends on.
+## Essential — anchors the accuracy claim (~8 minutes)
 
-**Valuable if you have the patience:**
-4. Three up-strums.
-5. Detune the B string ~20 cents flat and low E ~30 cents flat (check with Single mode), then three strums.
-6. Six strums with one string muted by the fretting hand, rotating which string.
-7. A strum with a fan/TV/traffic audible.
-8. Any second instrument (electric, classical) — one solo-string set + two strums.
+1. `solo-e2.wav`, `solo-a2.wav`, `solo-d3.wav`, `solo-g3.wav`, `solo-b3.wav`, `solo-e4.wav` — each open string plucked ALONE, letting it ring ~5 s. Standard tuning, tuned to 0 first with Single mode (or note what Single reads and say so). These give per-string ground truth, your strings' real inharmonicity, and their polarisation behaviour.
+2. `solo-a2-long.wav` — the open A string alone, ringing as long as it will (15-20 s, re-pluck once if it dies early). The A string's polarisation beat is too slow to measure in a 5 s clip; this one clip settles it.
+3. `polar-parallel.wav` and `polar-perp.wav` — the low E alone, ~6 s each: once picking parallel to the soundboard, once perpendicular. Measures the polarisation depth extremes every accuracy number depends on.
+
+## High value — validates the safety gates (~4 minutes)
+
+4. `strum-muted-1.wav` … `strum-muted-6.wav` — six strums, each with ONE string muted by the fretting hand (file number = which string is muted, 1 = high E … 6 = low E). This measures the hallucination rate on real audio — whether the app ever claims a string you did not play.
+5. `strum-detuned.wav` — detune the B string ~20¢ flat and the low E ~30¢ flat (check with Single mode first), then three strums in one clip, ~3 s apart. Tests the adjust-and-restrum regime the feature exists for.
+
+## Nice to have (~2 minutes)
+
+6. `strum-up.wav` — three up-strums in one clip (reverses the string-onset order; everything so far is down-strums).
+7. `strum-noisy.wav` — two strums with a fan/TV/traffic clearly audible.
+8. `chrome-capture-*.wav` — in Chrome on the phone, after a good strum reading, tap "Save last strum (debug)" and drop the file here. Compares Chrome's real getUserMedia path against the voice-recorder path.
+
+If any clip is missing the pipeline runs anyway and says what it could not fit. After these arrive: `node research/calibrate/report.mjs` produces the full calibration report and the parameter set that retires the beta label.
