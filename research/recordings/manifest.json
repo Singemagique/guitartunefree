@@ -1,0 +1,51 @@
+{
+  "tuning": "standard",
+  "a4": 440,
+  "clips": [
+    {
+      "file": "solo-d2.wav",
+      "role": "solo",
+      "string": 2
+    },
+    {
+      "file": "solo-g2.wav",
+      "role": "solo",
+      "string": 3
+    },
+    {
+      "file": "solo-b2.wav",
+      "role": "solo",
+      "string": 4
+    },
+    {
+      "file": "strum-muted-1.wav",
+      "role": "strum",
+      "muted": 5
+    },
+    {
+      "file": "strum-muted-2.wav",
+      "role": "strum",
+      "muted": 4
+    },
+    {
+      "file": "strum-muted-3.wav",
+      "role": "strum",
+      "muted": 3
+    },
+    {
+      "file": "strum-muted-4.wav",
+      "role": "strum",
+      "muted": 2
+    },
+    {
+      "file": "strum-muted-5.wav",
+      "role": "strum",
+      "muted": 1
+    },
+    {
+      "file": "strum-muted-6.wav",
+      "role": "strum",
+      "muted": 0
+    }
+  ]
+}

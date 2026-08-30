@@ -742,7 +742,7 @@ export function createTunerView(): ViewHandle {
   const strumFoot = h(
     'p',
     'tv-strum-foot',
-    'Validated on synthetic strums; real-guitar calibration in progress.',
+    'Calibrated against real guitar recordings. Octave-paired tunings not yet supported.',
   );
   /* Beta diagnostics: the board can only be tuned against what the DEVICE
      heard, and a phone's capture path is not what a voice recorder hears.
