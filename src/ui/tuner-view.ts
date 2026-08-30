@@ -1615,12 +1615,15 @@ export function createTunerView(): ViewHandle {
       setStrumState('analysing');
     }
     const targetFreqs = targetNotes.map((note) => note.freq);
+    // analyse() transfers the buffer to the worker, which detaches `samples`;
+    // the debug export needs its own copy taken before that happens.
+    const kept = samples.slice(0);
     try {
       const res = await analyse(samples, sampleRate, targetFreqs);
       if (id !== strumSeq || mode !== 'strum') return;
       await settleAck();
       if (id !== strumSeq || mode !== 'strum') return;
-      lastCapture = { samples, sampleRate };
+      lastCapture = { samples: kept, sampleRate };
       strumSave.hidden = false;
       applyStrumResult(res);
     } catch {

@@ -1,8 +1,8 @@
 # Strum check — real-audio calibration report
 
-Generated 2026-08-30T20:06:33.437Z in 134.6 s.
+Generated 2026-08-30T20:20:11.312Z in 136.2 s.
 
-**Source:** research/recordings/ (17 files)
+**Source:** research/recordings/ (19 files)
 **Clips folder:** `I:\Claude\guitartunefree\research\recordings`
 **Analyzer:** `src/audio/strum.ts` and `src/audio/pitch.ts`, esbuild-compiled and imported — not copied.
 
@@ -13,7 +13,7 @@ Generated 2026-08-30T20:06:33.437Z in 134.6 s.
 | `5strum.wav` | strum | — | — | 44100 Hz 16-bit mono | 14.8 s | filename |
 | `polar-parallel.wav` | polar | — | — | 44100 Hz 16-bit mono | 7.0 s | filename |
 | `polar-perp.wav` | polar | — | — | 44100 Hz 16-bit mono | 7.4 s | filename |
-| `solo-a2-long.wav` | solo | A2 | — | 44100 Hz 16-bit mono | 12.3 s | filename |
+| `solo-a2-long.wav` | solo | A2 | — | 44100 Hz 16-bit mono | 22.1 s | filename |
 | `solo-a2.wav` | solo | A2 | — | 44100 Hz 16-bit mono | 6.0 s | filename |
 | `solo-b2.wav` | solo | B3 | — | 44100 Hz 16-bit mono | 6.1 s | manifest.json |
 | `solo-d2.wav` | solo | D3 | — | 44100 Hz 16-bit mono | 5.9 s | manifest.json |
@@ -27,6 +27,8 @@ Generated 2026-08-30T20:06:33.437Z in 134.6 s.
 | `strum-muted-4.wav` | strum | muted D3 | muted | 44100 Hz 16-bit mono | 5.0 s | manifest.json |
 | `strum-muted-5.wav` | strum | muted A2 | muted | 44100 Hz 16-bit mono | 5.6 s | manifest.json |
 | `strum-muted-6.wav` | strum | muted E2 | muted | 44100 Hz 16-bit mono | 5.6 s | manifest.json |
+| `strum-noisy.wav` | strum | — | — | 44100 Hz 16-bit mono | 13.1 s | filename |
+| `strum-up.wav` | strum | — | up | 44100 Hz 16-bit mono | 14.1 s | filename |
 
 ## 2. Solo strings — the ground truth
 
@@ -37,7 +39,7 @@ measured inharmonicity — the parameter `strum.ts` constrains with `bMax`,
 
 | string | target Hz | f0 Hz | cents vs target | MPM Hz | MPM − fit | B | comb resid | partials | SNR |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| A2 | 110.000 | 109.772 | -3.60 c | 110.728 | +15.02 c | 1.52e-4 | 2.97 c | 12 | 30.9 dB |
+| A2 | 110.000 | 109.778 | -3.49 c | 110.718 | +14.75 c | 1.56e-4 | 2.97 c | 13 | 29.2 dB |
 | A2 | 110.000 | 109.820 | -2.84 c | — | — c | 1.45e-4 | 4.96 c | 14 | 23.3 dB |
 | B3 | 246.942 | 246.900 | -0.29 c | — | — c | 7.27e-5 | 0.35 c | 22 | 21.0 dB |
 | D3 | 146.832 | 146.830 | -0.02 c | 148.549 | +20.15 c | 1.56e-4 | 3.05 c | 12 | 25.0 dB |
@@ -49,7 +51,7 @@ measured inharmonicity — the parameter `strum.ts` constrains with `bMax`,
 
 | string | measured B | wound? | strum.ts bNominal | bPrior | bMax | inside range? |
 | --- | --- | --- | --- | --- | --- | --- |
-| A2 | 1.52e-4 | wound | 1.20e-4 | 1.10e-4 | 5.50e-4 | yes |
+| A2 | 1.56e-4 | wound | 1.20e-4 | 1.10e-4 | 5.50e-4 | yes |
 | A2 | 1.45e-4 | wound | 1.20e-4 | 1.10e-4 | 5.50e-4 | yes |
 | B3 | 7.27e-5 | plain | 1.20e-4 | 1.10e-4 | 5.50e-4 | yes |
 | D3 | 1.56e-4 | wound | 1.20e-4 | 1.10e-4 | 5.50e-4 | yes |
@@ -66,7 +68,7 @@ contamination weighting inherits whenever it has to extrapolate.
 
 | string | q (rolloff) | p (pluck pos) | rms dev | worst partial | partials |
 | --- | --- | --- | --- | --- | --- |
-| A2 | 1.40 | 0.045 | 6.1 dB | 16.5 dB | 13 |
+| A2 | 1.77 | 0.095 | 5.7 dB | 11.9 dB | 13 |
 | A2 | 0.88 | 0.215 | 3.9 dB | 6.8 dB | 13 |
 | B3 | 0.99 | 0.040 | 6.6 dB | 13.9 dB | 23 |
 | D3 | 0.72 | 0.195 | 5.8 dB | 13.0 dB | 12 |
@@ -90,7 +92,7 @@ Fitting `log rate₁ = a + n·log f₀` across the six solo clips decides it.
 
 | string | f0 Hz | split (Hz at f0) | split (cents) | depth (partner/dominant) | measured on k | usable partials |
 | --- | --- | --- | --- | --- | --- | --- |
-| A2 | 109.77 | — | — | 0.021 | k=1 | 0 |
+| A2 | 109.78 | 0.316 | 4.97 | 0.068 | k=6 | 1 |
 | A2 | 109.82 | — | — | 0.109 | k=1 | 0 |
 | B3 | 246.90 | 0.333 | 2.33 | 0.054 | k=8 | 2 |
 | D3 | 146.83 | 0.160 | 1.88 | 1.000 | k=4 | 1 |
@@ -98,7 +100,7 @@ Fitting `log rate₁ = a + n·log f₀` across the six solo clips decides it.
 | E4 | 329.38 | 0.437 | 2.30 | 0.064 | k=3 | 2 |
 | G3 | 195.46 | — | — | 0.066 | k=1 | 0 |
 
-**Fitted exponent: 0.80** over 4 strings (0 ⇒ the spike's Hz-constant model, 1 ⇒ the verifier's cents-constant model; closer to the VERIFIER model).
+**Fitted exponent: 0.61** over 5 strings (0 ⇒ the spike's Hz-constant model, 1 ⇒ the verifier's cents-constant model; closer to the VERIFIER model).
 
 ### 3a. The dedicated polarisation clips (pick parallel vs perpendicular)
 
@@ -136,6 +138,8 @@ so the two are free to disagree.
 | `strum-muted-4.wav` | 5.0 s | -22.2 dBFS | 1 (0.0 s) | 1 | 0 | 2.1 s |
 | `strum-muted-5.wav` | 5.6 s | -19.3 dBFS | 1 (0.2 s) | 1 | 0 | 2.1 s |
 | `strum-muted-6.wav` | 5.6 s | -17.0 dBFS | 1 (0.1 s) | 1 | 0 | 2.1 s |
+| `strum-noisy.wav` | 13.1 s | -19.7 dBFS | 3 (0.2, 4.4, 8.6 s) | 3 | 0 | 2.1 s |
+| `strum-up.wav` | 14.1 s | -21.9 dBFS | 3 (0.2, 4.3, 8.9 s) | 3 | 0 | 2.1 s |
 
 ### 4b. Per-strum results
 
@@ -192,7 +196,7 @@ held it back, and "achieved / needs" is the shortfall in that term's own units.
 
 
 
-**Strum 4** at 9.20 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 35 ms
+**Strum 4** at 9.20 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 38 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -205,7 +209,7 @@ held it back, and "achieved / needs" is the shortfall in that term's own units.
 
 
 
-**Strum 5** at 12.07 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 33 ms
+**Strum 5** at 12.07 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 32 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -226,7 +230,7 @@ held it back, and "achieved / needs" is the shortfall in that term's own units.
 | 2 | 5.95 s | yes | 6/6 | — | -22.9 -0.9 +1.5 -0.8 -21.2 +0.3 |
 | 3 | 11.53 s | yes | 6/6 | — | -22.3 -1.1 +1.3 -0.8 -20.9 +0.4 |
 
-**Strum 1** at 0.26 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 60 ms
+**Strum 1** at 0.26 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 57 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -239,7 +243,7 @@ held it back, and "achieved / needs" is the shortfall in that term's own units.
 
 
 
-**Strum 2** at 5.95 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 38 ms
+**Strum 2** at 5.95 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 36 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -267,7 +271,7 @@ held it back, and "achieved / needs" is the shortfall in that term's own units.
 
 **`strum-muted-1.wav`** — muted (E4 muted)
 
-captured by the app; N=16384, 9 frames, 5/5 confirmed, 58 ms
+captured by the app; N=16384, 9 frames, 5/5 confirmed, 33 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -282,7 +286,7 @@ captured by the app; N=16384, 9 frames, 5/5 confirmed, 58 ms
 
 **`strum-muted-2.wav`** — muted (B3 muted)
 
-captured by the app; N=16384, 9 frames, 5/5 confirmed, 35 ms
+captured by the app; N=16384, 9 frames, 5/5 confirmed, 34 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -297,7 +301,7 @@ captured by the app; N=16384, 9 frames, 5/5 confirmed, 35 ms
 
 **`strum-muted-3.wav`** — muted (G3 muted)
 
-captured by the app; N=16384, 9 frames, 5/5 confirmed, 33 ms
+captured by the app; N=16384, 9 frames, 5/5 confirmed, 32 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -312,7 +316,7 @@ captured by the app; N=16384, 9 frames, 5/5 confirmed, 33 ms
 
 **`strum-muted-4.wav`** — muted (D3 muted)
 
-captured by the app; N=16384, 9 frames, 5/5 confirmed, 32 ms
+captured by the app; N=16384, 9 frames, 5/5 confirmed, 31 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -342,7 +346,7 @@ captured by the app; N=16384, 9 frames, 5/5 confirmed, 33 ms
 
 **`strum-muted-6.wav`** — muted (E2 muted)
 
-captured by the app; N=16384, 9 frames, 5/5 confirmed, 48 ms
+captured by the app; N=16384, 9 frames, 5/5 confirmed, 31 ms
 
 | string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -355,6 +359,100 @@ captured by the app; N=16384, 9 frames, 5/5 confirmed, 48 ms
 
 
 
+**`strum-noisy.wav`** — 3 strums
+
+| # | onset | captured by the app? | confirmed | refusal | per-string cents |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 0.37 s | yes | 6/6 | — | -11.6 -1.7 +0.4 -1.3 -2.6 +0.1 |
+| 2 | 4.35 s | yes | 6/6 | — | -11.8 -1.7 +0.5 -1.3 -3.4 +0.3 |
+| 3 | 8.55 s | yes | 6/6 | — | -12.7 -1.9 +0.2 -1.5 -3.6 +0.1 |
+
+**Strum 1** at 0.37 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 53 ms
+
+| string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E2 | yes | -11.56 | +3.99 | -15.54 | 1.00 | tSnr | 29.2 dB | 5.8 dB |
+| A2 | yes | -1.69 | -2.84 | +1.15 | 1.00 | tSnr | 30.5 dB | 5.8 dB |
+| D3 | yes | +0.43 | -0.02 | +0.45 | 1.00 | tSnr | 28.1 dB | 5.8 dB |
+| G3 | yes | -1.31 | -4.79 | +3.48 | 1.00 | tSnr | 28.1 dB | 5.8 dB |
+| B3 | yes | -2.59 | -0.29 | -2.30 | 1.00 | tSnr | 18.2 dB | 5.8 dB |
+| E4 | yes | +0.10 | -1.29 | +1.39 | 1.00 | tSnr | 23.6 dB | 5.8 dB |
+
+
+
+**Strum 2** at 4.35 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 37 ms
+
+| string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E2 | yes | -11.81 | +3.99 | -15.80 | 1.00 | tSnr | 30.6 dB | 5.8 dB |
+| A2 | yes | -1.73 | -2.84 | +1.10 | 1.00 | tSnr | 31.1 dB | 5.8 dB |
+| D3 | yes | +0.52 | -0.02 | +0.54 | 1.00 | tSnr | 27.7 dB | 5.8 dB |
+| G3 | yes | -1.33 | -4.79 | +3.46 | 1.00 | tSnr | 26.8 dB | 5.8 dB |
+| B3 | yes | -3.36 | -0.29 | -3.07 | 1.00 | tSnr | 21.6 dB | 5.8 dB |
+| E4 | yes | +0.30 | -1.29 | +1.59 | 1.00 | tSnr | 23.5 dB | 5.8 dB |
+
+
+
+**Strum 3** at 8.55 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 31 ms
+
+| string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E2 | yes | -12.69 | +3.99 | -16.68 | 1.00 | tSnr | 28.5 dB | 5.8 dB |
+| A2 | yes | -1.88 | -2.84 | +0.96 | 1.00 | tSnr | 30.4 dB | 5.8 dB |
+| D3 | yes | +0.16 | -0.02 | +0.18 | 1.00 | tSnr | 30.3 dB | 5.8 dB |
+| G3 | yes | -1.49 | -4.79 | +3.30 | 1.00 | tSnr | 28.6 dB | 5.8 dB |
+| B3 | yes | -3.60 | -0.29 | -3.31 | 1.00 | tSnr | 22.9 dB | 5.8 dB |
+| E4 | yes | +0.11 | -1.29 | +1.40 | 1.00 | tSnr | 25.4 dB | 5.8 dB |
+
+
+
+**`strum-up.wav`** — up — 3 strums
+
+| # | onset | captured by the app? | confirmed | refusal | per-string cents |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 0.18 s | yes | 6/6 | — | -11.4 -1.3 +0.1 -1.5 -2.8 +0.1 |
+| 2 | 4.25 s | yes | 6/6 | — | -11.6 -1.9 +0.2 -1.6 -2.6 +0.4 |
+| 3 | 8.94 s | yes | 6/6 | — | -11.8 -1.8 +0.4 -1.7 -2.9 -0.2 |
+
+**Strum 1** at 0.18 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 32 ms
+
+| string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E2 | yes | -11.43 | +3.99 | -15.41 | 1.00 | tSnr | 34.4 dB | 5.8 dB |
+| A2 | yes | -1.27 | -2.84 | +1.57 | 1.00 | tSnr | 36.5 dB | 5.8 dB |
+| D3 | yes | +0.13 | -0.02 | +0.16 | 1.00 | tSnr | 35.8 dB | 5.8 dB |
+| G3 | yes | -1.55 | -4.79 | +3.25 | 1.00 | tSnr | 36.6 dB | 5.8 dB |
+| B3 | yes | -2.75 | -0.29 | -2.46 | 1.00 | tSnr | 27.0 dB | 5.8 dB |
+| E4 | yes | +0.07 | -1.29 | +1.36 | 1.00 | tSnr | 26.6 dB | 5.8 dB |
+
+
+
+**Strum 2** at 4.25 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 33 ms
+
+| string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E2 | yes | -11.59 | +3.99 | -15.57 | 1.00 | tSnr | 35.4 dB | 5.8 dB |
+| A2 | yes | -1.93 | -2.84 | +0.91 | 1.00 | tSnr | 36.1 dB | 5.8 dB |
+| D3 | yes | +0.23 | -0.02 | +0.25 | 1.00 | tSnr | 36.7 dB | 5.8 dB |
+| G3 | yes | -1.64 | -4.79 | +3.15 | 1.00 | tSnr | 36.9 dB | 5.8 dB |
+| B3 | yes | -2.60 | -0.29 | -2.31 | 1.00 | tSnr | 25.6 dB | 5.8 dB |
+| E4 | yes | +0.44 | -1.29 | +1.72 | 1.00 | tSnr | 28.5 dB | 5.8 dB |
+
+
+
+**Strum 3** at 8.94 s — captured by the app; N=16384, 9 frames, 6/6 confirmed, 32 ms
+
+| string | confirmed | cents | truth | error | conf | weakest term | achieved | needs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E2 | yes | -11.81 | +3.99 | -15.80 | 1.00 | tSnr | 33.5 dB | 5.8 dB |
+| A2 | yes | -1.84 | -2.84 | +1.00 | 1.00 | tSnr | 35.9 dB | 5.8 dB |
+| D3 | yes | +0.45 | -0.02 | +0.47 | 1.00 | tSnr | 34.1 dB | 5.8 dB |
+| G3 | yes | -1.74 | -4.79 | +3.05 | 1.00 | tSnr | 35.3 dB | 5.8 dB |
+| B3 | yes | -2.86 | -0.29 | -2.57 | 1.00 | tSnr | 23.3 dB | 5.8 dB |
+| E4 | yes | -0.16 | -1.29 | +1.13 | 1.00 | tSnr | 27.4 dB | 5.8 dB |
+
+
+
 ### 4c. Accuracy and detection, pooled
 
 Over every strum EVENT — including the ones the recorder did not deliver, which
@@ -362,14 +460,14 @@ are marked separately so the two failure modes never get averaged together.
 
 | metric | value |
 | --- | --- |
-| strum events | 14 (14 delivered by the recorder) |
-| strings played | 78 |
-| confirmed, all events | 78 (100.0%) |
-| **confirmed, events the app actually captured** | **78 / 78 (100.0%)** |
+| strum events | 20 (20 delivered by the recorder) |
+| strings played | 114 |
+| confirmed, all events | 114 (100.0%) |
+| **confirmed, events the app actually captured** | **114 / 114 (100.0%)** |
 | median abs error vs solo ground truth | 2.00 c |
-| p95 abs error | 6.86 c |
-| worst abs error | 7.36 c |
-| scored on | 7 of 8 clips |
+| p95 abs error | 15.45 c |
+| worst abs error | 16.68 c |
+| scored on | 9 of 10 clips |
 | muted-string clips | 6 |
 | **hallucinations** (muted string confirmed) | **0 / 6** |
 
@@ -455,8 +553,8 @@ moment an unplayed string is confirmed:
 
 ## 6. Recommended parameter set
 
-Measured on 8 real strum clip(s): 14 strum events, of
-which the app's own recorder delivered 14. Ground truth from
+Measured on 10 real strum clip(s): 20 strum events, of
+which the app's own recorder delivered 20. Ground truth from
 7 solo clip(s).
 
 **No played string went unconfirmed on any strum**, so there is no gate to relax: every proposed value below is a dash by construction.
