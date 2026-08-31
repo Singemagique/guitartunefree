@@ -597,7 +597,7 @@
 }
 
 /* ================================================================
-   Strum check (beta) — the second mode of this tab. Everything below
+   Strum check — the second mode of this tab. Everything below
    is additive: with the mode segment on "Single" not one of these
    selectors can match, because the whole panel is [hidden].
 
@@ -614,29 +614,6 @@
 .tv-modes .seg-item {
   min-height: 44px;
   gap: 7px;
-}
-
-/* Outlined amber, the same language as the capo tag: a label about the thing
-   next to it, not a state of it. */
-.tv-beta {
-  padding: 2px 5px;
-  border: 1px solid var(--amber-line);
-  border-radius: 5px;
-  background: var(--amber-soft);
-  color: var(--amber);
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 1.2;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
-
-/* On the selected item the tag is sitting on amber, where an amber tag is
-   invisible: take the label's own ink instead. */
-.tv-modes .seg-item.is-active .tv-beta {
-  border-color: rgba(35, 24, 10, 0.4);
-  background: rgba(35, 24, 10, 0.13);
-  color: var(--ink);
 }
 
 /* ---------- strum panel ---------- */
@@ -873,6 +850,76 @@
   color: var(--muted);
 }
 
+/* ---------- the octave twins (v2.2) ---------- */
+
+/* A twin row is not an unread row and not an unconfirmed one: it is a row that
+   was never going to carry a number, because the string it names is in exact
+   octave unison with another and a strum contains no evidence that separates
+   them. So it is given no track, no figure and no mark to leave empty — the
+   same reasoning as the no-reading state above, arrived at one step earlier. */
+.tv-row.is-twin .tv-bar,
+.tv-row.is-twin .tv-row-cents,
+.tv-row.is-twin .tv-row-mark {
+  display: none;
+}
+
+.tv-row-twin {
+  grid-column: 3 / -1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Outlined amber, the same language as the capo tag: a label about the string
+   next to it, not a verdict on it. Static ink, static border — nothing in this
+   chip has a clock, and nothing about it changes luminance. */
+.tv-row-twin-tag {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid var(--amber-line);
+  border-radius: 5px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tv-row-twin-note {
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+/* The partial board's one sentence, under the rows it is about. Amber, like
+   every other line in this app that tells you what to do next rather than what
+   was measured. */
+.tv-strum-twins {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--amber);
+}
+
+/* ...and never under a card that has replaced the board. A refusal, an
+   unsupported tuning and a processed capture path each put a message where the
+   rows were, and a footnote about two of those rows underneath it is a footnote
+   to nothing. Held out by the selector rather than by a `hidden` the view has to
+   remember to unset, exactly as the message block's own button is. */
+.tv-strum[data-state="refused"] .tv-strum-twins,
+.tv-strum[data-state="unsupported"] .tv-strum-twins,
+.tv-strum[data-state="processed"] .tv-strum-twins,
+.tv-strum[data-state="refused"] .tv-strum-foot,
+.tv-strum[data-state="unsupported"] .tv-strum-foot,
+.tv-strum[data-state="processed"] .tv-strum-foot {
+  display: none;
+}
+
 /* ---------- refusal / unsupported ---------- */
 
 .tv-strum-msg {
@@ -1024,7 +1071,7 @@
   flex: 0 0 auto;
 }
 
-/* Beta debug export: quiet by design — a small ghost row under the footnote. */
+/* Debug export: quiet by design — a small ghost row under the footnote. */
 .tv-strum-save {
   margin: 2px auto 0;
   display: block;

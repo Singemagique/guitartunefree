@@ -1308,19 +1308,55 @@ export function analyzeStrumRaw(
 /* --------------------------------------------------------- shipping wrapper */
 
 /**
- * Condition 2's helper: two strings an exact octave apart (Drop D, DADGAD,
- * Open D/G/E...) make the higher one's whole partial series a subset of the
- * lower one's, and the estimator cannot tell an unplayed high string from a
- * ringing low one. Standard's E2/E4 are TWO octaves apart, which both test
- * suites clear, so only a 12-semitone gap counts.
+ * How far a composed pair of targets may sit from a true 1200 cents and still
+ * BE an octave for this purpose. Wide enough for any sweetening or fine-tune
+ * that lands on a real octave — the widest same-letter spread any sweetened
+ * preset produces is the James Taylor E strings at 9 cents — and far short of
+ * the 100 that would start catching a major seventh or a minor ninth.
  */
-export function hasOctavePair(midis: readonly number[]): boolean {
+const OCTAVE_PAIR_TOL_CENTS = 35;
+
+/**
+ * Condition 2's helper: which strings of the selected tuning are octave twins,
+ * as index pairs (i < j).
+ *
+ * Two strings an exact octave apart (Drop D, Drop C, DADGAD, Open D/G/E...)
+ * make the higher one's whole partial series a subset of the lower one's, and
+ * the estimator cannot tell an unplayed high string from a ringing low one.
+ * That is not a gap in this port; it is what the recording contains. Full
+ * separation was built and then adversarially verified as a no-go: the
+ * separator told 11 confident >10 cent lies per ~3400 held-out readings where
+ * the shipped analyser tells 1, and it still left the octave child unconfirmed
+ * 63% of the time on a guitar that was in tune. So nothing here tries to split
+ * a pair — the caller names the members and reads the strings around them
+ * (v2.2), which an 8,300-trial measurement put at full spec.
+ *
+ * Two tests, and the midi one is kept belt-and-braces: it is exactly what the
+ * old boolean gate held, and releasing anything that gate held is not on the
+ * table. The frequency test closes a measured hole in it — a custom tuning
+ * with two strings 11 semitones apart, fine-tuned +50 and -50 cents, is an
+ * EXACT frequency octave that an integer-midi gate waves straight through, and
+ * it hallucinated the upper string in 16.7% of trials. Standard's E2/E4 are TWO
+ * octaves apart (2400 cents) and match neither test, which is what both v2.0
+ * suites clear.
+ */
+export function octavePairs(
+  targetFreqs: readonly number[],
+  midis: readonly number[],
+): Array<[number, number]> {
+  const pairs: Array<[number, number]> = [];
   for (let i = 0; i < midis.length; i++) {
     for (let j = i + 1; j < midis.length; j++) {
-      if (Math.abs(midis[i] - midis[j]) === 12) return true;
+      const fi = targetFreqs[i];
+      const fj = targetFreqs[j];
+      const byFreq =
+        fi > 0 &&
+        fj > 0 &&
+        Math.abs(Math.abs(toCents(Math.log(fj / fi))) - 1200) <= OCTAVE_PAIR_TOL_CENTS;
+      if (Math.abs(midis[i] - midis[j]) === 12 || byFreq) pairs.push([i, j]);
     }
   }
-  return false;
+  return pairs;
 }
 
 /**

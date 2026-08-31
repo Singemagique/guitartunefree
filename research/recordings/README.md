@@ -19,4 +19,4 @@ Status: `5strum.wav` received — it validated the analyzer (30/30 readings) and
 7. `strum-noisy.wav` — two strums with a fan/TV/traffic clearly audible.
 8. `chrome-capture-*.wav` — in Chrome on the phone, after a good strum reading, tap "Save last strum (debug)" and drop the file here. Compares Chrome's real getUserMedia path against the voice-recorder path.
 
-If any clip is missing the pipeline runs anyway and says what it could not fit. After these arrive: `node research/calibrate/report.mjs` produces the full calibration report and the parameter set that retires the beta label.
+If any clip is missing the pipeline runs anyway and says what it could not fit. `node research/calibrate/report.mjs` produces the full calibration report. (This set did its job: the 2026-08-30 run confirmed 114/114 played strings, 0 hallucinations, median 2.0¢, and the shipped thresholds unchanged — the beta label is retired.)

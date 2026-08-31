@@ -7,7 +7,7 @@ import { tuningById, tuningNotes } from '../music/tunings';
 import { MicCapture, clampAnalysisFloor } from '../audio/mic';
 import { MIN_FREQ, PitchDetector } from '../audio/pitch';
 import type { StrumResult, StrumStringResult } from '../audio/strum';
-import { hasOctavePair } from '../audio/strum';
+import { octavePairs } from '../audio/strum';
 import { StrumCapture, analyzeStrumAsync } from '../audio/strumcapture';
 import { NativeStrumCapture, isNativeCaptureAvailable } from '../audio/nativecapture';
 import type { CapturePath } from '../audio/captureprobe';
@@ -106,7 +106,7 @@ const ANNOUNCE_HOLD_MS = 1400;
     answer to "what now", the readout is the answer to "did that work". */
 const GUIDE_HOLD_MS = 1200;
 
-/* ---------- strum check (beta) ---------- */
+/* ---------- strum check ---------- */
 
 /** Condition 4 of the v2.0 adversarial verification: the strum board promises
     ±5 cents and no copy anywhere in it may claim better. The monophonic latch
@@ -117,6 +117,16 @@ const STRUM_IN_TUNE_CENTS = 5;
     the rail; the printed figure never saturates, so a string a tone flat reads
     a pegged bar next to an honest "−203¢" rather than a plausible "−25¢". */
 const STRUM_BAR_CENTS = 25;
+/** v2.2's partial board: the lowest target a single-pair tuning may carry and
+    still be read around. Drop C's C2 (65.4 Hz) passes; a bass low D1 (36.7 Hz)
+    does not, because Drop-D bass is where the 8,300-trial measurement found the
+    whole-offset refusal leaking — 81.7% against a 98.3% spec — and a refusal
+    that leaks is the one failure this mode may not have. */
+const STRUM_TWIN_MIN_HZ = 60;
+/** ...and how many non-twin strings have to be left for the board to be worth
+    showing at all. Four of six (Drop D, Drop C) is the measured case; two of
+    four is a bass, and a two-row board is not a strum check. */
+const STRUM_TWIN_MIN_READ = 3;
 /** How many out-of-tune strings a single spoken sentence will name before it
     starts counting them instead. Six clauses is not a sentence. */
 const STRUM_SPEAK_MAX = 3;
@@ -178,6 +188,17 @@ function strumLatched(state: StrumState): boolean {
   return state === 'unsupported' || state === 'processed';
 }
 
+/**
+ * v2.2's three-way answer to "what can a strum say about this tuning?".
+ *
+ * `full` every string read from the strum (the v2.0 supported path, unchanged)
+ * · `partial` one octave pair in a guitar-register tuning: the four other
+ * strings read at full spec with the pair ringing, and the pair's own rows say
+ * so instead of showing a number · `blocked` the octave overlap is deeper than
+ * that, and the mode shows an explanation instead of listening.
+ */
+type StrumScope = 'full' | 'partial' | 'blocked';
+
 interface BoardRow {
   el: HTMLElement;
   bar: HTMLElement;
@@ -185,6 +206,9 @@ interface BoardRow {
   cents: HTMLElement;
   arrow: HTMLElement;
   note: HTMLElement;
+  /** The "octave twin" chip, shown in `partial` scope on the pair's two rows
+      and hidden on every other row of every other tuning. */
+  twin: HTMLElement;
 }
 
 /** Once the user grants the mic we may re-open it on show() without a gesture. */
@@ -239,7 +263,7 @@ function medianOf(buf: Float64Array, scratch: Float64Array, count: number): numb
   return scratch[(count - 1) >> 1];
 }
 
-/** 16-bit PCM WAV from a mono float capture — for the beta's debug export. */
+/** 16-bit PCM WAV from a mono float capture — for the debug export. */
 function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
   const out = new ArrayBuffer(44 + samples.length * 2);
   const v = new DataView(out);
@@ -484,7 +508,7 @@ export function createTunerView(): ViewHandle {
   /** What the hint would be saying if nothing were holding the region. */
   let pendingSpoken = 'Play a string';
 
-  /* ---------- strum check (beta) ---------- */
+  /* ---------- strum check ---------- */
 
   /** Not persisted: Single is what this tab is. */
   let mode: Mode = 'single';
@@ -505,10 +529,14 @@ export function createTunerView(): ViewHandle {
   let strumBusy = false;
   /** When the board last said "Heard it" — see settleAck. */
   let strumAckAt = 0;
-  /** Condition 2: two strings exactly an octave apart. Latched from the CURRENT
-      targets, so it follows the tuning sheet and the capo (a capo transposes
-      every string by the same amount and cannot create or remove a pair). */
-  let octaveBlocked = false;
+  /** Condition 2, as of v2.2 a verdict rather than a boolean. Latched from the
+      CURRENT targets, so it follows the tuning sheet, the sweetening and the
+      capo (a capo transposes every string by the same amount and cannot create
+      or remove a pair — a per-string fine-tune can do both). */
+  let strumScope: StrumScope = 'full';
+  /** In `partial` scope, the two board rows that are octave twins, lower target
+      first; `null` in every other scope. */
+  let twinPair: readonly [number, number] | null = null;
   /**
    * The app's other sound sources. The capture-path probe plays a tone and
    * reads the envelope that comes back, so anything else coming out of the
@@ -562,25 +590,20 @@ export function createTunerView(): ViewHandle {
 
   /* Mode segment. Two buttons, not a radio group: they are toggles over one
      view, and the rest of the app spells that aria-pressed. Not persisted —
-     Single is the tuner this app is, and a beta mode that let itself back in on
-     the next launch would be answering a question nobody asked twice. */
+     Single is the tuner this app is, and a second mode that let itself back in
+     on the next launch would be answering a question nobody asked twice. */
   const modeSeg = h('div', 'seg tv-modes');
   modeSeg.setAttribute('role', 'group');
   modeSeg.setAttribute('aria-label', 'Tuner mode');
   const singleBtn = h('button', 'seg-item tv-mode is-active', 'Single');
   singleBtn.type = 'button';
   singleBtn.setAttribute('aria-pressed', 'true');
-  const strumBtn = h('button', 'seg-item tv-mode');
+  const strumBtn = h('button', 'seg-item tv-mode', 'Strum');
   strumBtn.type = 'button';
   strumBtn.setAttribute('aria-pressed', 'false');
-  /* The eye gets "Strum · BETA"; the ear gets a sentence, because a screen
-     reader reading a middle dot as "dot" turns the label into nonsense. */
-  strumBtn.setAttribute('aria-label', 'Strum check, beta');
-  const strumBtnText = h('span', undefined, 'Strum');
-  strumBtnText.setAttribute('aria-hidden', 'true');
-  const betaTag = h('span', 'tv-beta', 'beta');
-  betaTag.setAttribute('aria-hidden', 'true');
-  strumBtn.append(strumBtnText, betaTag);
+  /* The segment has room for one word; the ear gets the mode's whole name, and
+     the visible word is its first, so voice control still reaches it. */
+  strumBtn.setAttribute('aria-label', 'Strum check');
   modeSeg.append(singleBtn, strumBtn);
   el.appendChild(modeSeg);
 
@@ -662,7 +685,7 @@ export function createTunerView(): ViewHandle {
   notice.append(noticeTitle, noticeBody, steps, retryBtn);
   el.appendChild(notice);
 
-  /* ---------- strum board (beta) ---------- */
+  /* ---------- strum board ---------- */
 
   const strumPanel = h('section', 'tv-strum');
   strumPanel.hidden = true;
@@ -739,14 +762,17 @@ export function createTunerView(): ViewHandle {
   const strumCapoTag = h('span', 'tv-capo tv-strum-capo');
   strumCapoTag.hidden = true;
 
-  const strumFoot = h(
-    'p',
-    'tv-strum-foot',
-    'Calibrated against real guitar recordings. Octave-paired tunings not yet supported.',
-  );
-  /* Beta diagnostics: the board can only be tuned against what the DEVICE
-     heard, and a phone's capture path is not what a voice recorder hears.
-     Kept in memory only until saved; one capture, overwritten per strum. */
+  /* The partial board's own sentence (v2.2), under the rows it is about and
+     composed from the tuning's actual note names. Shown in `partial` scope
+     alone — in a tuning with no octave pair there is nothing here to explain,
+     and a permanent line about a case that cannot arise is noise. */
+  const strumTwins = h('p', 'tv-strum-twins');
+  strumTwins.hidden = true;
+
+  const strumFoot = h('p', 'tv-strum-foot', 'Calibrated against real guitar recordings.');
+  /* Diagnostics: the board can only be tuned against what the DEVICE heard,
+     and a phone's capture path is not what a voice recorder hears. Kept in
+     memory only until saved; one capture, overwritten per strum. */
   let lastCapture: { samples: Float32Array; sampleRate: number } | null = null;
   const strumSave = h('button', 'btn btn-ghost tv-strum-save', 'Save last strum (debug)');
   strumSave.type = 'button';
@@ -788,7 +814,16 @@ export function createTunerView(): ViewHandle {
   const flowGroup = h('div', 'tv-flow-group');
   flowGroup.append(flowEl, levelEl);
   strumHead.append(flowGroup, strumCapoTag);
-  strumCard.append(strumHead, progressEl, board, strumMsg, strumFoot, strumSave, strumCta);
+  strumCard.append(
+    strumHead,
+    progressEl,
+    board,
+    strumTwins,
+    strumMsg,
+    strumFoot,
+    strumSave,
+    strumCta,
+  );
   strumPanel.appendChild(strumCard);
   el.appendChild(strumPanel);
 
@@ -1067,17 +1102,42 @@ export function createTunerView(): ViewHandle {
     syncGuide();
   }
 
-  /* ================= strum check (beta) ================= */
+  /* ================= strum check ================= */
+
+  /** Is this row one of the octave twins? False in every scope but `partial`,
+      where it is true of exactly two rows. */
+  function isTwin(i: number): boolean {
+    return twinPair !== null && (twinPair[0] === i || twinPair[1] === i);
+  }
+
+  /** The twins as the board prints them ("D2", "F♯3") and as the region speaks
+      them ("D2", "F sharp 3"), lower target first. */
+  function twinLabels(): { seen: [string, string]; spoken: [string, string] } | null {
+    if (!twinPair) return null;
+    const [a, b] = twinPair;
+    const [lo, hi] = targetNotes[a].freq <= targetNotes[b].freq ? [a, b] : [b, a];
+    return {
+      seen: [
+        `${prettyPc(targetNotes[lo].pc)}${targetNotes[lo].octave}`,
+        `${prettyPc(targetNotes[hi].pc)}${targetNotes[hi].octave}`,
+      ],
+      spoken: [spokenName(targetNotes[lo]), spokenName(targetNotes[hi])],
+    };
+  }
 
   /** Everything the board is claiming, dropped in one go. Called whenever the
       targets move or the mic closes: a row's number is a measurement against a
       particular target frequency, and it stops being true the moment that
-      frequency does. */
+      frequency does.
+
+      A twin row goes back to the state it never leaves: the chip, and no
+      number. */
   function clearBoard(): void {
     board.classList.add('is-empty');
     for (let i = 0; i < boardRows.length; i++) {
       const row = boardRows[i];
-      row.el.className = 'tv-row';
+      const twin = isTwin(i);
+      row.el.className = twin ? 'tv-row is-twin' : 'tv-row';
       row.el.setAttribute('aria-label', rowLabel(i, null));
       row.bar.className = 'tv-bar';
       row.fill.removeAttribute('style');
@@ -1085,6 +1145,7 @@ export function createTunerView(): ViewHandle {
       setText(row.cents, '—');
       setText(row.arrow, '');
       row.note.hidden = true;
+      row.twin.hidden = !twin;
     }
   }
 
@@ -1125,9 +1186,21 @@ export function createTunerView(): ViewHandle {
       note2.setAttribute('aria-hidden', 'true');
       note2.hidden = true;
 
-      li.append(no, name, bar, cents, mark, note2);
+      /* v2.2's twin state, in the same slot and for the same reason: this row
+         is never going to carry a measurement, so it is never given a track to
+         put one in. The chip says what the row IS; the row's aria-label says
+         it again for the ear. */
+      const twin = h('span', 'tv-row-twin');
+      twin.setAttribute('aria-hidden', 'true');
+      twin.append(
+        h('span', 'tv-row-twin-tag', 'Octave twin'),
+        h('span', 'tv-row-twin-note', 'Pluck it alone'),
+      );
+      twin.hidden = true;
+
+      li.append(no, name, bar, cents, mark, note2, twin);
       li.setAttribute('aria-label', rowLabel(i, null));
-      return { el: li, bar, fill, cents, arrow, note: note2 };
+      return { el: li, bar, fill, cents, arrow, note: note2, twin };
     });
     for (const row of boardRows) board.appendChild(row.el);
     clearBoard();
@@ -1138,6 +1211,10 @@ export function createTunerView(): ViewHandle {
       it. */
   function rowLabel(i: number, result: StrumStringResult | null): string {
     const base = `String ${stringNo(i)}, ${spokenName(targetNotes[i])}`;
+    // A twin row has one meaning and holds it through every state of the mode:
+    // the analysis read this string, the reading was discarded on the way in
+    // (see applyStrumResult), and there is nothing here to interpret.
+    if (isTwin(i)) return `${base}, octave twin, pluck it alone to check it`;
     if (!result) return base;
     if (!result.detected || result.cents === null) return `${base}, not confirmed`;
     // The SAME rounded figure the row prints (see fillRow): a row that says
@@ -1152,6 +1229,10 @@ export function createTunerView(): ViewHandle {
   /** Draw one measurement. The bar saturates at ±STRUM_BAR_CENTS and says so
       with a rail marker; the figure never does. */
   function fillRow(i: number, result: StrumStringResult): void {
+    // Belt and braces with applyStrumResult's own skip: a twin's estimate is
+    // the one number in this mode that is known to be worthless, and there must
+    // be no path — now or later — by which it reaches a row.
+    if (isTwin(i)) return;
     const row = boardRows[i];
     const cents = result.cents;
     if (!result.detected || cents === null) {
@@ -1197,13 +1278,21 @@ export function createTunerView(): ViewHandle {
   }
 
   /** One sentence per strum. Named strings are capped so the region stays
-      speakable; past the cap the rest are counted. */
+      speakable; past the cap the rest are counted.
+
+      The twins are not in any of it — not in the total, not in the confirmed
+      count, not in the unconfirmed count, not as a named string. They were
+      never read, so "4 of 4 in tune" is the true sentence about a Drop D board;
+      the clause that follows is what stops it being heard as "the guitar is in
+      tune". */
   function boardSentence(results: readonly StrumStringResult[]): string {
-    const n = results.length;
+    let n = 0;
     let inTune = 0;
     let unknown = 0;
     const off: { i: number; cents: number }[] = [];
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < results.length; i++) {
+      if (isTwin(i)) continue;
+      n++;
       const r = results[i];
       // Rounded, exactly as fillRow prints it: the count spoken here has to be
       // the count of ticks on screen.
@@ -1216,8 +1305,12 @@ export function createTunerView(): ViewHandle {
         off.push({ i, cents: shown });
       }
     }
+    const twins = twinLabels();
+    const coda = twins
+      ? ` Octave twins ${twins.spoken[0]} and ${twins.spoken[1]} need a solo pluck.`
+      : '';
     if (unknown === 0 && off.length === 0) {
-      return `All ${n} strings in tune.`;
+      return `All ${n} strings in tune.${coda}`;
     }
     const parts = [`${inTune} of ${n} in tune.`];
     off.sort((a, b) => Math.abs(b.cents) - Math.abs(a.cents));
@@ -1231,7 +1324,7 @@ export function createTunerView(): ViewHandle {
     if (unknown > 0) {
       parts.push(`${unknown} ${unknown === 1 ? 'string' : 'strings'} not confirmed.`);
     }
-    return parts.join(' ');
+    return parts.join(' ') + coda;
   }
 
   /**
@@ -1394,7 +1487,16 @@ export function createTunerView(): ViewHandle {
       // Re-arming after a result is silent: the result sentence is still the
       // thing being read.
       if (previous === 'unsupported' || previous === 'idle' || previous === 'checking') {
-        speakStrum('Listening. Strum all strings once.');
+        const twins = twinLabels();
+        // The partial board's terms, said once when the mode becomes usable.
+        // Every result sentence after this carries only the short reminder —
+        // the whole explanation on every strum is not a live region, it is a
+        // recording.
+        speakStrum(
+          twins
+            ? `Listening. Strum all strings once. ${twins.spoken[0]} and ${twins.spoken[1]} are octave twins, which a strum cannot tell apart — pluck each one alone to check it.`
+            : 'Listening. Strum all strings once.',
+        );
       }
     }
     renderStrum();
@@ -1428,7 +1530,7 @@ export function createTunerView(): ViewHandle {
         // replaced by "Listening…" the instant the mic opened — so a sighted
         // player never got to read it. It belongs in the phase where the card is
         // uncovered and the instruction is still true.
-        flow = 'Listening — strum all six strings once';
+        flow = `Listening — strum all ${targetNotes.length} strings once`;
         break;
       case 'results':
       case 'refused':
@@ -1444,20 +1546,40 @@ export function createTunerView(): ViewHandle {
     setText(flowEl, flow);
   }
 
-  /** Condition 2. Shown INSTEAD of listening: the capture is never opened for
-      one of these tunings, so there is no chance of a number reaching the
-      board through some later path. */
+  /** Condition 2, in its `blocked` scope. Shown INSTEAD of listening: the
+      capture is never opened for one of these tunings, so there is no chance of
+      a number reaching the board through some later path.
+
+      The copy is final, not provisional. "Yet" was the honest word while the
+      separation was unmeasured; it has since been built, verified adversarially
+      and rejected — a string in exact octave unison with its parent leaves no
+      independent evidence in the band this app analyses — so the card now says
+      what is true of any tuner rather than promising a version that will not
+      come. */
   function renderUnsupported(): void {
     const name = tuningById(state.tuningId).name;
-    setText(strumMsgTitle, 'Not ready for this tuning');
+    setText(strumMsgTitle, 'Single mode for this tuning');
     setText(
       strumMsgBody,
-      `Strum check can’t separate two strings an octave apart yet, and ${name} has a pair. Single mode reads this tuning exactly as it always has.`,
+      `Two strings an octave apart sound as one to a strum — no tuner can split them from a single strum, and ${name} pairs them in a way the board can’t read around. Single mode reads this tuning exactly as it always has.`,
     );
     setText(strumMsgHint, '');
     strumMsgHint.hidden = true;
     speakStrum(
-      `Strum check is not reliable for octave-paired tunings yet. ${name} has a pair. Use Single mode.`,
+      `Strum check cannot separate two strings an octave apart, and ${name} pairs them in a way the board cannot read around. Use Single mode, which reads this tuning exactly as it always has.`,
+    );
+  }
+
+  /** Condition 2's `partial` scope, in one line under the board. Names the
+      actual notes, because "the octave pair" is not a thing a player can point
+      at on a neck and "D2 and D3" is. */
+  function syncTwinHint(): void {
+    const twins = twinLabels();
+    strumTwins.hidden = !twins;
+    if (!twins) return;
+    setText(
+      strumTwins,
+      `${twins.seen[0]} and ${twins.seen[1]} are octave twins — a strum can’t tell them apart. Pluck each alone; Single mode reads them exactly.`,
     );
   }
 
@@ -1530,7 +1652,14 @@ export function createTunerView(): ViewHandle {
       return;
     }
     board.classList.remove('is-empty');
-    for (let i = 0; i < boardRows.length; i++) fillRow(i, res.strings[i]);
+    // The twins' estimates are dropped here, unread. They were measured — the
+    // analyser is always given every string, because its refusal depends on
+    // seeing every string — but a number about a string that is in exact octave
+    // unison with its neighbour has no independent evidence behind it, so it
+    // does not reach a row, a summary or a tally.
+    for (let i = 0; i < boardRows.length; i++) {
+      if (!isTwin(i)) fillRow(i, res.strings[i]);
+    }
     setStrumState('results');
     renderStrum();
     // Forced, for the same reason: two identical strums must be two
@@ -1577,7 +1706,7 @@ export function createTunerView(): ViewHandle {
    * that the mode now answers when it is spoken to.
    */
   function handleOnset(): void {
-    if (mode !== 'strum' || octaveBlocked || strumBusy) return;
+    if (mode !== 'strum' || strumScope === 'blocked' || strumBusy) return;
     strumAckAt = performance.now();
     // Before the state change, so the first paint of "Heard it — reading…"
     // already carries the dimmed board and an empty bar rather than showing
@@ -1598,7 +1727,7 @@ export function createTunerView(): ViewHandle {
   }
 
   async function handleStrum(samples: Float32Array, sampleRate: number): Promise<void> {
-    if (mode !== 'strum' || octaveBlocked) return;
+    if (mode !== 'strum' || strumScope === 'blocked') return;
     // A second strum while the first is still in the worker is dropped rather
     // than queued: the player strummed again because they want the CURRENT
     // state of the instrument, and a stale board arriving after a fresh one
@@ -1614,6 +1743,14 @@ export function createTunerView(): ViewHandle {
       beginCapture();
       setStrumState('analysing');
     }
+    /* EVERY target, in every scope. This is the v2.2 invariant and it is not a
+       preference: the whole-offset refusal (condition 1) lives inside
+       analyzeStrum and judges the instrument from the strings it was handed, so
+       an analysis given four of six strings is an analysis of a different
+       instrument. Measured, filtering the twins out before the call: the
+       refusal stops firing and errors up to 389 cents reach the board. The
+       twins are analysed like everything else and their results are thrown away
+       on arrival (see applyStrumResult) — never before. */
     const targetFreqs = targetNotes.map((note) => note.freq);
     // analyse() transfers the buffer to the worker, which detaches `samples`;
     // the debug export needs its own copy taken before that happens.
@@ -1638,14 +1775,51 @@ export function createTunerView(): ViewHandle {
 
   /* ---------- capture lifecycle ---------- */
 
-  /** Condition 2's gate, recomputed from the live targets. Returns true when
-      the answer changed, because the caller has to decide whether to open or
-      close the capture on the back of it. */
-  function syncOctaveGate(): boolean {
-    const next = hasOctavePair(targetNotes.map((note) => note.midi));
-    if (next === octaveBlocked) return false;
-    octaveBlocked = next;
-    return true;
+  /**
+   * Condition 2's gate, recomputed from the live targets, and since v2.2 a
+   * three-way one. Returns true when the BLOCKED half of the answer changed,
+   * because that is the half the caller has to open or close the capture on:
+   * `full` and `partial` both listen, through the identical capture.
+   *
+   * The predicate, exactly as measured:
+   *   - no octave pair at all -> `full`, the v2.0 path, untouched;
+   *   - exactly one pair, the lowest target at or above STRUM_TWIN_MIN_HZ, and
+   *     at least STRUM_TWIN_MIN_READ strings left outside it -> `partial`.
+   *     Drop D and Drop C are this case and only this case: 8,300 trials put
+   *     their four non-pair strings at 99.1% detection with zero errors over 10
+   *     cents, through capo 1-3 and at 44.1 and 48 kHz, and 100% on real-audio
+   *     pseudo-strums;
+   *   - anything else -> `blocked`. DADGAD and the open tunings carry two or
+   *     more pair relations, which is a different measurement nobody has taken;
+   *     Drop-D bass has one, but its D1 is 36.7 Hz and its refusal was measured
+   *     leaking at 81.7% against a 98.3% spec.
+   */
+  function syncStrumScope(): boolean {
+    const wasBlocked = strumScope === 'blocked';
+    const pairs = octavePairs(
+      targetNotes.map((note) => note.freq),
+      targetNotes.map((note) => note.midi),
+    );
+    let lowest = Infinity;
+    for (const note of targetNotes) {
+      if (note.freq < lowest) lowest = note.freq;
+    }
+    if (pairs.length === 0) {
+      strumScope = 'full';
+      twinPair = null;
+    } else if (
+      pairs.length === 1 &&
+      lowest >= STRUM_TWIN_MIN_HZ &&
+      targetNotes.length - 2 >= STRUM_TWIN_MIN_READ
+    ) {
+      strumScope = 'partial';
+      twinPair = pairs[0];
+    } else {
+      strumScope = 'blocked';
+      twinPair = null;
+    }
+    syncTwinHint();
+    return (strumScope === 'blocked') !== wasBlocked;
   }
 
   /**
@@ -1731,7 +1905,7 @@ export function createTunerView(): ViewHandle {
 
   async function startStrum(): Promise<void> {
     if (strumStarting || strumCap) return;
-    if (octaveBlocked) {
+    if (strumScope === 'blocked') {
       renderUnsupported();
       setStrumState('unsupported');
       renderStrum();
@@ -1871,19 +2045,22 @@ export function createTunerView(): ViewHandle {
 
   /** Targets moved (tuning, capo or A4): every number on the board was measured
       against the old ones, so the board goes back to naming strings. Re-runs
-      the octave gate too — the new tuning may be one this mode cannot read, or
-      may be the first one it can. */
+      the octave gate too — the new tuning may be one this mode cannot read, one
+      it can read around, or the first one it can read outright. */
   function resetStrum(): void {
     strumSeq++;
     strumBusy = false;
     // Every number the board is holding was measured against the old targets,
     // and so was the capture the bar is drawing. Both go at once.
     endCapture();
+    // Before the rows are built, not after: which of them are twins is part of
+    // what a row IS — its class, its chip and its accessible name are all
+    // written from the new scope as the row is created.
+    const gateChanged = syncStrumScope();
     renderBoard();
     // A live capture keeps recording, but the window it records has to follow
     // the new targets — a drop to a bass tuning lengthens it.
     strumCap?.setTargets(targetNotes.map((note) => note.freq));
-    const gateChanged = syncOctaveGate();
     // A processed capture path is a fact about the device, not about the
     // tuning: new targets do not stop the system mangling the microphone. The
     // card stays exactly where it is, and nothing re-opens behind it.
@@ -1893,13 +2070,13 @@ export function createTunerView(): ViewHandle {
       return;
     }
     if (mode !== 'strum') {
-      strumState = octaveBlocked ? 'unsupported' : 'idle';
+      strumState = strumScope === 'blocked' ? 'unsupported' : 'idle';
       strumPanel.dataset.state = strumState;
-      if (octaveBlocked) renderUnsupported();
+      if (strumScope === 'blocked') renderUnsupported();
       renderStrum();
       return;
     }
-    if (octaveBlocked) {
+    if (strumScope === 'blocked') {
       // Same as entering the mode on one of these tunings: nothing is listening
       // through the shared stream any more, so it does not stay open.
       if (strumCap) stopStrum();
@@ -1949,8 +2126,8 @@ export function createTunerView(): ViewHandle {
       stop(true);
       mode = 'strum';
       syncMode();
-      syncOctaveGate();
-      if (octaveBlocked) {
+      syncStrumScope();
+      if (strumScope === 'blocked') {
         // Condition 2 never listens, so the stream the two modes share has no
         // reader on this side. Close it rather than leave the OS microphone
         // indicator lit for a mode that is switched off.

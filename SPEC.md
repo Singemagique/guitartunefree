@@ -480,3 +480,51 @@ Root cause (researched, Chromium-source-confirmed): Android WebView/Chrome selec
 - Probe: synthetic harness proving the classifier separates flat vs NS-shaped vs AGC-pumping envelopes; e2e in headless Chrome with fake mic confirming 'clean' verdict and no card.
 - Plugin: builds in CI (gradle assembleDebug); TS layer feature-detects absence cleanly (web unchanged — all suites pass).
 - On-device validation by the user: APK strum with native path reads like the browser does.
+
+
+## v2.2 — Partial strum support, and the beta label off
+
+Condition 2 of the v2.0 verification ("octave-duplicate tunings unsupported FOR NOW") is settled, in both directions. The DSP does not change — `analyzeStrum` and everything above it is byte-for-byte the v2.1 code, because an 8,300-trial corpus binds its current behaviour — and the whole of v2.2 is the gate in front of it and the board behind it.
+
+### The measurement this rests on (binding)
+- **Full octave separation: NO-GO, and not pending.** A separator was built and adversarially verified. A string in exact octave unison with its parent has no independent spectral evidence under the app's 2 kHz analysis band: every partial it contributes, the parent already contributes. On held-out draws the separator produced **11 confident >10 cent errors per ~3,400 readings** against the shipped analyser's **1**, and still left the octave child **unconfirmed 63%** of the time on an in-tune guitar. It is not shipped; no version of it is planned. Copy anywhere in the app that said "yet" is wrong and is corrected.
+- **One pair, four readable strings: at full spec.** In tunings with EXACTLY ONE octave pair (Drop D, Drop C), the SHIPPED analyser reads the four non-pair strings with the pair ringing at **99.1% detection and zero errors over 10 cents**, confirmed at capo 1-3, at 44.1 and 48 kHz, and at **100% on real-audio pseudo-strums**.
+- **The refusal holds at 98.3% — only if it sees everything.** Condition 1's whole-offset gate stays at spec provided `analyzeStrum` is handed ALL of the tuning's targets. Filtering the pair out before the call was measured leaking errors up to **389 cents** past a refusal that would have caught them.
+- **Drop-D bass fails and is excluded.** One pair, but with D1 at 36.7 Hz the refusal leaks at **81.7%** against that 98.3% spec.
+- **A gate hole, measured and closed.** The v2.0 integer-midi gate passed a custom tuning with two strings 11 semitones apart fine-tuned −50 / +50 cents — an exact FREQUENCY octave — which hallucinated the upper string in **16.7%** of trials.
+
+### The three-way gate (src/audio/strum.ts, gate helper only)
+```ts
+export function octavePairs(targetFreqs: readonly number[], midis: readonly number[]): Array<[number, number]>;
+// index pairs i<j where |midis[i] - midis[j]| === 12
+//                  OR | |1200 * log2(freqs[j]/freqs[i])| - 1200 | <= 35
+```
+`hasOctavePair` is gone; this replaces it. Both tests, deliberately: the midi test is exactly what the old boolean gate held and releasing anything it held is not on the table; the frequency test closes the 16.7% hole above. The ±35 cent tolerance is wide enough for any sweetening or fine-tune that lands on a real octave (the widest same-letter spread any sweetened preset produces is the James Taylor preset's two E strings, 9 cents apart) and far short of the 100 that would start catching major sevenths. Standard's E2/E4 are TWO octaves apart (2400 cents) and match neither test.
+
+The view computes its scope from `targetNotes` (`.freq` already carries sweetening, capo and A4; `.midi` alongside it):
+- **no pair → `full`** — the v2.0 supported path, unchanged in every respect;
+- **exactly one pair AND min(target freq) >= 60 Hz AND (strings − 2) >= 3 → `partial`**, keeping the two pair indices. 60 Hz is the guitar-register line: Drop C's C2 at 65.4 Hz passes, a bass D1 at 36.7 Hz does not;
+- **anything else → `blocked`**, the v2.0 unsupported card. DADGAD and Open G/D/E/A each carry three pair relations; Drop-D bass (D1 A1 D2 G2) fails both the 60 Hz test and the three-readable-strings test.
+
+Recomputed on every target change, and it follows the tuning sheet, the capo and the fine-tune (a capo transposes every string equally and cannot create or remove a pair — a per-string fine-tune can do both).
+
+### Partial mode: the contract
+- **Capture and analysis are IDENTICAL to full mode.** `analyse()` receives ALL targets, always. This is the v2.2 invariant and it is stated in a comment where the targets are passed: the refusal lives inside `analyzeStrum` and judges the instrument from the strings it was handed, so an analysis given four of six strings is an analysis of a different instrument. Never filter targets before analysis; never re-derive the refusal from the displayed strings.
+- **The twins' results are discarded on arrival**, after the analysis, in the view — `applyStrumResult` skips them and `fillRow` refuses them a second time. A twin row must never show a number, a bar, a check, an arrow or a "couldn't confirm", and must never reach the summary sentence.
+- **Twin rows** (`.tv-row.is-twin`) drop the bar, figure and mark entirely — the same reasoning as condition 5's no-reading row, arrived at one step earlier — and carry a static amber outline chip reading "Octave twin" plus "Pluck it alone". Flash-free and static, like everything else in this mode.
+- **One hint line** (`.tv-strum-twins`), under the board, in `partial` scope only, composed from the tuning's actual note names: *"D2 and D3 are octave twins — a strum can't tell them apart. Pluck each alone; Single mode reads them exactly."* Held out by selector in the refused / unsupported / processed states, where the board it annotates is not on screen.
+- **The summary sentence excludes the twins** from the total, the confirmed count, the unconfirmed count and the named strings, and then carries one short clause so "All 4 strings in tune" is never heard as "the guitar is in tune": *"Octave twins D2 and D3 need a solo pluck."* The longer explanation is announced once, when the mode arms.
+- **Aria**: a twin row's accessible name is "String 6, D2, octave twin, pluck it alone to check it", in every state of the mode.
+- Stale dimming, the level ripple and the capture progress are unchanged; twin rows simply never populate.
+
+### Blocked-card copy
+The v2.0 card promised a version that is not coming. It now states the limit: title "Single mode for this tuning", body *"Two strings an octave apart sound as one to a strum — no tuner can split them from a single strum, and {tuning} pairs them in a way the board can't read around. Single mode reads this tuning exactly as it always has."* The spoken variant says the same thing in the same order. The phrasing is general on purpose: it has to be true of a tuning blocked for three or more pair relations, for a low register, and for too few readable strings alike.
+
+### Beta removal
+The label came off because the feature is calibrated against real recordings and its scope is now final rather than pending. The `.tv-beta` tag and its two CSS rules are gone, the mode button's accessible name is "Strum check", the footnote is "Calibrated against real guitar recordings." (the twin story is the partial hint's job), and the "(beta)" section comments read "Strum check". The debug save-last-strum export STAYS — it was never beta-only; only its comment changed.
+
+### Verification bar
+- Gate table: every factory preset at capo 0 and 3 resolves to the intended scope (standard/E♭/D-standard/sweetened/bass/uke/mandolin → full; Drop D, Drop C → partial on indices 0 and 2; DADGAD, Open G/D/E/A → blocked at three pairs); the 11-semitone −50/+50 custom tuning → one pair; a plain major seventh and Standard's E2/E4 → none; D1 A1 D2 G2 → blocked.
+- The analysis-sees-all-strings invariant holds on every path that reaches `analyse()`.
+- Partial board at 320 px and with a capo set: twin rows fit, names transpose, no horizontal overflow; twin aria-labels correct; no flashing anywhere.
+- `npm run build` (tsc --noEmit + vite) clean; Single mode and the v2.0/v2.0.2/v2.1 behaviour untouched.
