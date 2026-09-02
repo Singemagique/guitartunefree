@@ -86,12 +86,15 @@
   padding: 1px 7px;
   border: 1px solid var(--amber-line);
   border-radius: 999px;
-  background: var(--amber-soft);
+  /* The header chip's own recipe — dark pill, amber hairline, amber eyebrow —
+     so the trainer's target reads as a member of the chip family rather than a
+     one-off badge. */
+  background: var(--panel-2);
   color: var(--amber);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1.3;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -214,18 +217,20 @@
   margin: 5px 2px 0;
   min-height: 17px;
   text-align: center;
-  font-size: 12.5px;
-  line-height: 1.35;
+  font-size: 12px;
+  line-height: 1.45;
   color: var(--muted);
   transition: color var(--dur) var(--ease);
 }
 
+/* Same metrics as the hint it replaces: the two swap in one slot, and a
+   half-pixel of difference between them is a jump on every tap. */
 .nv-tap-live {
   margin: 5px 2px 0;
   min-height: 17px;
   text-align: center;
-  font-size: 12.5px;
-  line-height: 1.35;
+  font-size: 12px;
+  line-height: 1.45;
   font-weight: 600;
   color: var(--amber);
 }
@@ -587,7 +592,8 @@
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   box-shadow: 0 0 0 1px rgb(255 180 84 / 14%), 0 8px 20px rgb(0 0 0 / 45%);
-  transition: box-shadow 0.28s ease, border-color 0.28s ease, transform 0.1s ease;
+  transition: box-shadow var(--dur-slow) var(--ease), border-color var(--dur-slow) var(--ease),
+    transform var(--dur-fast) var(--ease);
 }
 
 .nv-transport:active {
@@ -613,8 +619,8 @@
   background: var(--amber);
   clip-path: polygon(24% 6%, 90% 50%, 90% 50%, 24% 94%);
   transform: translateX(2px);
-  transition: clip-path 0.28s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.28s ease,
-    transform 0.28s ease;
+  transition: clip-path var(--dur-slow) var(--ease), background-color var(--dur-slow) var(--ease),
+    transform var(--dur-slow) var(--ease);
 }
 
 .nv-transport.is-running .nv-shape {
@@ -652,6 +658,16 @@
   background:
     radial-gradient(130% 58% at 50% -8%, rgb(255 180 84 / 10%), transparent 62%),
     var(--bg);
+}
+
+/* Leaving. The overlay owns the entire screen, so dropping it in one frame is a
+   cut, not a close — the stage fades for --dur-fast and only then gives its
+   fixed position back (metronome-view.ts holds the class for the same 130ms,
+   the way the tuning sheet holds its own). Opacity only, one shot, on the tap
+   that asked for it. */
+.nv-stage.is-big.is-closing {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
 }
 
 /* Centred over the pendulum rather than stranded in a corner, and sized to its
@@ -833,7 +849,7 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
   min-width: 30px;
   text-align: center;
   font-size: 19px;
-  font-weight: 650;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
@@ -858,7 +874,7 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
 }
 
 .nv-trip {
-  font-size: 0.55em;
+  font-size: 11px;
   font-weight: 700;
   vertical-align: super;
   margin-left: 1px;
@@ -915,7 +931,8 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: right;
-  font-size: 11.5px;
+  font-size: 11px;
+  line-height: 1.45;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
 }
@@ -954,8 +971,11 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
   transform: translateX(16px);
 }
 
-/* A sentence with steppers in it. It wraps rather than scrolls, so the phrase
-   survives a 320px screen.
+/* One setting per line: label on the left, its stepper on the right — the same
+   shape as every other settings row in this view. It used to be a mad-lib
+   sentence with the steppers set into it ("[+2] BPM every [4] bars, up to
+   [160]"), which read well on paper and wrapped into three ragged lines on a
+   phone, breaking the phrase in a different place at every width.
 
    The row gap is 16px because the steppers are 28px of ink wearing a 44px
    target (see .nv-mini-btn::after): the lines have to sit a full 44px apart or
@@ -965,20 +985,34 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
    reach into the switch above it nor the last into the next row's switch. */
 .nv-prac-cfg {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 16px 6px;
+  flex-direction: column;
+  gap: 16px;
   padding: 8px 0;
 }
 
+/* nowrap: the label is two words at most and the stepper is a fixed object, so
+   there is nothing here worth breaking a line for. */
+.nv-prac-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .nv-prac-word {
+  flex: 0 1 auto;
+  min-width: 0;
   pointer-events: none;
-  font-size: 12.5px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
   color: var(--muted);
 }
 
 .nv-mini {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 2px;
 }
@@ -986,7 +1020,7 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
 .nv-prac-cfg .nv-mini-btn {
   width: 28px;
   height: 28px;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   border-color: var(--line);
   background: rgb(0 0 0 / 22%);
   color: var(--text);
@@ -998,10 +1032,13 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
 }
 
 /* The shared .icon-btn:hover carries the same weight as the rule above and
-   loses on source order, so the hover state is spelled out here. */
-.nv-prac-cfg .nv-mini-btn:hover {
-  border-color: var(--amber-line);
-  color: var(--text);
+   loses on source order, so the hover state is spelled out here — behind the
+   same pointer gate, so a tapped stepper does not stay lit. */
+@media (hover: hover) and (pointer: fine) {
+  .nv-prac-cfg .nv-mini-btn:hover {
+    border-color: var(--amber-line);
+    color: var(--text);
+  }
 }
 
 /* 28px of ink, 44px of target. Nine, not eight: an inset box is laid out
@@ -1021,11 +1058,13 @@ body.nv-big-open .app-header:has(.popover:not([hidden])) {
    with, so they take themselves out of the hit test. */
 .nv-mini-value {
   min-width: 28px;
+  padding: 0 4px;
   pointer-events: none;
   text-align: center;
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   color: var(--text);
 }
 

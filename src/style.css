@@ -33,14 +33,38 @@
   --header-h: 58px;
   --tabbar-h: 62px;
 
-  /* motion */
+  /* motion. One curve, three durations: --dur-fast is press feedback, overlay
+     exits and micro cross-fades; --dur is content entering and state changes
+     (the tab underline's own rate); --dur-slow belongs to the largest surfaces
+     only — the sheet and the transport. Nothing loops, and nothing modulates
+     luminance on a clock. */
   --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
   --dur: 220ms;
   --dur-fast: 130ms;
+  --dur-slow: 280ms;
+
+  /* --muted, lifted for the rows whose amber wash raises the floor under it. */
+  --muted-bright: #a3adb6;
 
   --font: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 
   color-scheme: dark;
+}
+
+/* The one enter for every content swap in the app: a tab panel, a mode, the
+   sheet's two panels, the metronome's big view. Content arrives at exactly the
+   tab underline's rate, so chrome and content move together. Opacity and
+   transform only, one shot, no exit — a swap snaps out and fades in. The global
+   reduced-motion clamp at the bottom of this file covers it. */
+@keyframes view-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.is-entering {
+  animation: view-enter var(--dur) var(--ease);
 }
 
 /* --------------------------------------------------------------- reset -- */
@@ -186,8 +210,14 @@ body::after {
     color var(--dur) var(--ease);
 }
 
-.btn:hover {
-  border-color: var(--amber-line);
+/* Every :hover in the app is gated on a real pointer. On a touchscreen the
+   hover state latches on the last thing tapped and stays lit long after the
+   finger has gone — which reads as a control that is still armed. Press
+   feedback comes from the :active rules alone, which fire and release. */
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover {
+    border-color: var(--amber-line);
+  }
 }
 
 .btn:active {
@@ -210,9 +240,11 @@ body::after {
     0 6px 20px var(--amber-glow);
 }
 
-.btn-primary:hover {
-  border-color: var(--amber);
-  filter: brightness(1.06);
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary:hover {
+    border-color: var(--amber);
+    filter: brightness(1.06);
+  }
 }
 
 .btn-ghost {
@@ -222,8 +254,10 @@ body::after {
   box-shadow: none;
 }
 
-.btn-ghost:hover {
-  background: rgba(255, 255, 255, 0.045);
+@media (hover: hover) and (pointer: fine) {
+  .btn-ghost:hover {
+    background: rgba(255, 255, 255, 0.045);
+  }
 }
 
 .icon-btn {
@@ -234,7 +268,7 @@ body::after {
   width: 44px;
   height: 44px;
   border: 1px solid transparent;
-  border-radius: 13px;
+  border-radius: var(--radius-sm);
   color: var(--muted);
   transition:
     color var(--dur) var(--ease),
@@ -248,9 +282,11 @@ body::after {
   height: 20px;
 }
 
-.icon-btn:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.05);
+@media (hover: hover) and (pointer: fine) {
+  .icon-btn:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.05);
+  }
 }
 
 .icon-btn:active {
@@ -302,8 +338,10 @@ body::after {
   inset: -5px -4px;
 }
 
-.chip:hover {
-  border-color: var(--amber-line);
+@media (hover: hover) and (pointer: fine) {
+  .chip:hover {
+    border-color: var(--amber-line);
+  }
 }
 
 .chip:active {
@@ -329,7 +367,7 @@ body::after {
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius);
   background: rgba(0, 0, 0, 0.26);
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
 }
@@ -343,14 +381,15 @@ body::after {
   gap: 6px;
   min-height: 38px;
   padding: 0 10px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   color: var(--muted);
   font-size: 14px;
   font-weight: 600;
   transition:
     color var(--dur) var(--ease),
     background-color var(--dur) var(--ease),
-    box-shadow var(--dur) var(--ease);
+    box-shadow var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
 }
 
 .seg-item::after {
@@ -359,8 +398,16 @@ body::after {
   inset: -4px 0;
 }
 
-.seg-item:hover {
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .seg-item:hover {
+    color: var(--text);
+  }
+}
+
+/* The same press language as .btn and .icon-btn — this is the tap that swaps
+   the whole Tune screen, and it used to answer a finger with nothing at all. */
+.seg-item:active {
+  transform: scale(0.97);
 }
 
 .seg-item.is-active {
@@ -401,9 +448,11 @@ body::after {
   inset: -4px -2px;
 }
 
-.pill:hover {
-  color: var(--text);
-  border-color: var(--amber-line);
+@media (hover: hover) and (pointer: fine) {
+  .pill:hover {
+    color: var(--text);
+    border-color: var(--amber-line);
+  }
 }
 
 .pill.is-active {
@@ -450,7 +499,10 @@ body::after {
   align-items: center;
   gap: 8px;
   height: calc(var(--header-h) + env(safe-area-inset-top));
-  padding: env(safe-area-inset-top) 10px 0 14px;
+  /* On the 16px grid the content gutter sets: the wordmark's left edge lines up
+     with the cards below it, and the gear's optical centre lands on their right
+     edge — 12px because the glyph carries 4px of its own padding. */
+  padding: env(safe-area-inset-top) 12px 0 16px;
   border-bottom: 1px solid rgba(41, 50, 60, 0.85);
   background: linear-gradient(180deg, rgba(15, 19, 23, 0.94), rgba(15, 19, 23, 0.74));
   -webkit-backdrop-filter: blur(14px) saturate(140%);
@@ -497,8 +549,11 @@ body::after {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 17px;
-  font-weight: 600;
-  letter-spacing: 0.015em;
+  /* The mark, not a heading: 700 with the letters drawn in rather than a
+     synthesised half-weight — Segoe UI is a static face and 650 renders
+     differently on every platform that has to fake it. */
+  font-weight: 700;
+  letter-spacing: -0.02em;
   color: var(--text);
   text-shadow: 0 0 22px rgba(255, 180, 84, 0.16);
 }
@@ -566,8 +621,10 @@ body::after {
   height: 15px;
 }
 
-.chip:hover .chip-caret {
-  color: var(--amber);
+@media (hover: hover) and (pointer: fine) {
+  .chip:hover .chip-caret {
+    color: var(--amber);
+  }
 }
 
 /* ---------------------------------------------------------- view root -- */
@@ -666,8 +723,10 @@ body.is-locked .view-root {
   transition: transform var(--dur) var(--ease);
 }
 
-.tab:hover {
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .tab:hover {
+    color: var(--text);
+  }
 }
 
 .tab[aria-selected="true"] {
@@ -710,22 +769,15 @@ body.is-locked .view-root {
   transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
 }
 
+/* A held state, not a heartbeat: the dot fades in once and then sits there with
+   a static halo for as long as the thing is running. The app's flash-free rule
+   is absolute, and a halo that breathes on a 1.15 s clock is rhythmic luminance
+   however gentle it looks — this is the shape the reduced-motion build always
+   had, promoted to the only one. */
 .tab.is-running .tab-dot {
   opacity: 1;
   transform: scale(1);
-  animation: ts-pulse 1.15s ease-out infinite;
-}
-
-@keyframes ts-pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(255, 180, 84, 0.55);
-  }
-  70% {
-    box-shadow: 0 0 0 7px rgba(255, 180, 84, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(255, 180, 84, 0);
-  }
+  box-shadow: 0 0 0 3px var(--amber-glow);
 }
 
 /* ------------------------------------------------------ tuning sheet -- */
@@ -766,7 +818,7 @@ body.is-locked .view-root {
   background: linear-gradient(180deg, var(--panel-2), var(--panel) 42%);
   box-shadow: 0 -22px 60px rgba(0, 0, 0, 0.6), var(--sheen);
   transform: translate(-50%, 100%);
-  transition: transform 280ms var(--ease);
+  transition: transform var(--dur-slow) var(--ease);
 }
 
 .sheet.is-open {
@@ -823,6 +875,7 @@ body.is-locked .view-root {
    inside them — and outside the scroller, because a setting you adjust while
    reading the list must not be able to scroll off the top of it. */
 .capo-row {
+  position: relative;
   display: flex;
   flex: 0 0 auto;
   align-items: center;
@@ -833,6 +886,22 @@ body.is-locked .view-root {
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: rgba(0, 0, 0, 0.18);
+}
+
+/* The row is pinned above a list that scrolls under it, and a tuning name
+   arriving hard against its border reads as a slice. The border draws the edge;
+   this fades the 12px under it so a row passes out of sight instead of being
+   cut off. Height is untouched — the scrim is out of flow. */
+.capo-row::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 12px;
+  background: linear-gradient(180deg, var(--panel), transparent);
+  pointer-events: none;
 }
 
 .capo-label {
@@ -847,7 +916,7 @@ body.is-locked .view-root {
   gap: 2px;
   padding: 2px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-sm);
   background: rgba(0, 0, 0, 0.26);
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
 }
@@ -892,7 +961,7 @@ body.is-locked .view-root {
   min-height: 56px;
   padding: 9px 12px;
   border: 1px solid transparent;
-  border-radius: 13px;
+  border-radius: var(--radius-sm);
   text-align: left;
   color: var(--text);
   transition:
@@ -900,8 +969,10 @@ body.is-locked .view-root {
     border-color var(--dur-fast) var(--ease);
 }
 
-.sheet-item:hover {
-  background: rgba(255, 255, 255, 0.045);
+@media (hover: hover) and (pointer: fine) {
+  .sheet-item:hover {
+    background: rgba(255, 255, 255, 0.045);
+  }
 }
 
 .sheet-item:active {
@@ -939,21 +1010,22 @@ body.is-locked .view-root {
 
 /* The amber wash lifts the row background, so --muted would land under AA. */
 .sheet-item[aria-current="true"] .sheet-item-detail {
-  color: #a3adb6;
+  color: var(--muted-bright);
 }
 
 /* A sweetened tuning spells the same six letters as its plain twin, so the row
    carries the offsets that actually tell them apart on a third, quieter line. */
 .sheet-item-cents {
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
+  line-height: 1.45;
   letter-spacing: 0.1em;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
 .sheet-item[aria-current="true"] .sheet-item-cents {
-  color: #a3adb6;
+  color: var(--muted-bright);
 }
 
 .sheet-item-check {
@@ -1008,8 +1080,10 @@ body.is-locked .view-root {
   flex: 0 0 auto;
 }
 
-.sheet-row-edit:hover {
-  color: var(--amber);
+@media (hover: hover) and (pointer: fine) {
+  .sheet-row-edit:hover {
+    color: var(--amber);
+  }
 }
 
 .sheet-add .sheet-item-name {
@@ -1108,9 +1182,13 @@ body.is-locked .view-root {
   gap: 6px;
 }
 
+/* "String 6" is two words the row has no reason to break: wrapped, the label
+   takes a second line and drags the stepper beside it out of alignment with
+   every other row's. */
 .editor-string-name {
   font-size: 14px;
   font-weight: 600;
+  white-space: nowrap;
   color: var(--muted);
 }
 
@@ -1120,7 +1198,7 @@ body.is-locked .view-root {
   gap: 2px;
   padding: 2px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-sm);
   background: rgba(0, 0, 0, 0.26);
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
 }
@@ -1137,10 +1215,10 @@ body.is-locked .view-root {
 }
 
 /* One string, two lines: its note on top, its sweetening under it. Side by side
-   they would be four 44px targets, two readouts and two labels across a 320px
-   sheet, and the target size is not the thing to give up for that. 320px is the
-   only width where that is true, though — from 360px up they go side by side,
-   see the bottom of this file. */
+   they would be four 44px targets, two readouts and two labels across a phone
+   sheet, and the target size is not the thing to give up for that. From 400px
+   up there is room for both lines at full size, and they go side by side — see
+   the bottom of this file for how that number was measured. */
 .editor-string {
   flex-direction: column;
   align-items: stretch;
@@ -1158,8 +1236,9 @@ body.is-locked .view-root {
 }
 
 .editor-fine-name {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
+  line-height: 1.45;
   color: var(--muted);
 }
 
@@ -1226,9 +1305,11 @@ body.is-locked .view-root {
   color: var(--red);
 }
 
-.editor-delete:hover {
-  border-color: var(--red);
-  background: rgba(255, 111, 102, 0.1);
+@media (hover: hover) and (pointer: fine) {
+  .editor-delete:hover {
+    border-color: var(--red);
+    background: rgba(255, 111, 102, 0.1);
+  }
 }
 
 /* Second tap confirms. A static swap — colour and label, no blinking. */
@@ -1286,15 +1367,32 @@ body.is-locked .view-root {
 /* Wherever the width is there, the string's two lines sit side by side, which
    halves the row and doubles how many strings the scroller can show at once — an
    8-string custom is the case that needs it, and it is the same case in portrait
-   as in landscape. 360px is where they fit: at 320 the note stepper overflows
-   its line and collides with the cents stepper, so that width keeps the stack.
-   The "Fine tune" wording goes with the second line — the ¢ in the readout says
-   what the stepper is, and the group keeps its full spoken label. */
-@media (min-width: 360px) {
+   as in landscape. Below that they stack, which is what 320px always did.
+
+   400px, not the 360px this used to claim. The two lines need the label, two
+   44px buttons and a 46px readout twice over — 368px of row — and 360px of
+   viewport leaves 328px. The head line was set to shrink (flex: 1 1 auto,
+   min-width: 0) and its own stepper cannot, so what actually happened at 360
+   and 375 was that the note stepper overflowed its line and was painted ON TOP
+   of the cents stepper: measured overlaps of 30px and 15px, with "raise a
+   semitone" and "lower a cent" sharing pixels and the later one winning every
+   hit test in the overlap. The gap between the lines never entered into it —
+   the cents stepper is flush to the row's right edge at every width, so widening
+   the gap only moved the line that was already overflowing.
+
+   Measured, six rows, 320-560px: the overlap closes at 390 and the two nearest
+   opposing buttons clear each other by 1px per further pixel of viewport, so
+   400 is where the house 8px minimum between opposing targets is met (10px, and
+   18px at 414). The "Fine tune" wording goes with the second line — the ¢ in the
+   readout says what the stepper is, and the group keeps its full spoken
+   label. */
+@media (min-width: 400px) {
+  /* 12px, not 6: the room between two steppers whose outer buttons do opposite
+     things to the same string is not the place to save six pixels. */
   .editor-string {
     flex-direction: row;
     align-items: center;
-    gap: 6px;
+    gap: 12px;
     padding: 3px 3px 3px 14px;
   }
 
@@ -1327,12 +1425,17 @@ body.is-locked .view-root {
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  /* Glass, the same language as the sheet's scrim and the header above it. The
+     alpha stays at 0.96 so a WebView with no backdrop filter still gets a panel
+     the header cannot read through. */
+  background: linear-gradient(180deg, rgba(29, 36, 44, 0.96), rgba(23, 29, 35, 0.96));
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  backdrop-filter: blur(10px) saturate(140%);
   box-shadow: 0 20px 46px rgba(0, 0, 0, 0.55), var(--sheen);
   transform-origin: top right;
   opacity: 0;
   transform: translateY(-6px) scale(0.96);
-  transition: opacity 160ms var(--ease), transform 160ms var(--ease);
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 
 .popover.is-open {
@@ -1350,7 +1453,7 @@ body.is-locked .view-root {
   border-top: 1px solid var(--line);
   border-left: 1px solid var(--line);
   border-radius: 3px 0 0 0;
-  background: var(--panel-2);
+  background: rgba(29, 36, 44, 0.96);
   transform: rotate(45deg);
 }
 
@@ -1370,7 +1473,7 @@ body.is-locked .view-root {
   margin: 9px 0 10px;
   padding: 3px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-sm);
   background: rgba(0, 0, 0, 0.26);
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
 }
@@ -1394,10 +1497,20 @@ body.is-locked .view-root {
 }
 
 .a4-reset {
+  position: relative;
   width: 100%;
   min-height: 38px;
   padding: 0 12px;
   font-size: 13px;
+}
+
+/* 38px of ink, 44px of target — the house pad, on the one control in the
+   popover that sits under the floor. Vertical only: the button is already the
+   panel's full width. */
+.a4-reset::after {
+  content: "";
+  position: absolute;
+  inset: -3px 0;
 }
 
 .popover-note {
@@ -1410,17 +1523,19 @@ body.is-locked .view-root {
 
 /* ----------------------------------------------------- reduced motion -- */
 
+/* Delays go with the durations. A cut duration alone still leaves a staggered
+   run staggered — six rows over 150 ms of delay, each held at its start values
+   by an animation-fill of `backwards`, is six discrete pop-ins where the
+   preference asked for one instant swap. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
     scroll-behavior: auto !important;
-  }
-
-  .tab.is-running .tab-dot {
-    box-shadow: 0 0 0 3px rgba(255, 180, 84, 0.28);
   }
 }

@@ -1,7 +1,7 @@
 {
   "name": "TrueString — Guitar Tuner & Metronome",
   "short_name": "TrueString",
-  "description": "Free, lightweight guitar tuner and metronome. Auto tuner, manual reference tones, tuning presets. No ads, no accounts.",
+  "description": "Precision guitar tuner and metronome. Single-string and full-strum tuning, sweetened presets, speed trainer. No ads, no accounts.",
   "lang": "en",
   "dir": "ltr",
   "start_url": "./",

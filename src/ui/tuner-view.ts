@@ -148,6 +148,16 @@ const LEVEL_LAG = 2;
 const LEVEL_FLOOR = 0.16;
 /** Below this a rewrite is not a visible move, and the DOM is left alone. */
 const LEVEL_EPSILON = 0.02;
+/** How long the start/stop control stays inert after a stop taken by hand. Past
+    any double-tap — the platform's own threshold is 300 ms — and well under a
+    deliberate second press, which is the only tap in that window that could
+    honestly mean "start again". */
+const STOP_SETTLE_MS = 320;
+/** The board's reveal, end to end: the last of six rows starts 150 ms in
+    (5 x the 30 ms stagger tuner-view.css writes) and its bar takes --dur, 220 ms,
+    to grow — 370 ms, with a frame in hand. See revealBoard for why the class
+    cannot simply be left on. */
+const REVEAL_MS = 400;
 /** Steps the progress fills in when the player has asked for less motion. */
 const PROGRESS_STEPS = 4;
 /** The window a progress run assumes if the capture is somehow not there to
@@ -236,6 +246,42 @@ function s<K extends keyof SVGElementTagNameMap>(
 
 function setText(node: Element, text: string): void {
   if (node.textContent !== text) node.textContent = text;
+}
+
+/**
+ * The shared content-swap enter (style.css owns the keyframe and the class).
+ * Duplicated rather than imported, the way attachRepeat is: the views own their
+ * own behaviour. Re-entry restarts the run rather than stacking on it, and
+ * every way a run can end takes the class off again — it finishes, it is
+ * cancelled, or it is torn out of the render tree in the same task it started
+ * in (this panel, hidden by a tab switch in the frame the mode changed), which
+ * fires no event at all. Left on, the class re-arms the animation for the next
+ * time the panel is shown.
+ */
+const ENTER_MS = 400;
+const enterTimers = new WeakMap<HTMLElement, number>();
+
+function endEnter(node: HTMLElement): void {
+  window.clearTimeout(enterTimers.get(node));
+  enterTimers.delete(node);
+  node.classList.remove('is-entering');
+  node.removeEventListener('animationend', onEnterEnd);
+  node.removeEventListener('animationcancel', onEnterEnd);
+}
+
+function onEnterEnd(e: AnimationEvent): void {
+  const node = e.currentTarget as HTMLElement;
+  if (e.target !== node || e.animationName !== 'view-enter') return;
+  endEnter(node);
+}
+
+function enter(el: HTMLElement): void {
+  endEnter(el);
+  void el.offsetWidth;
+  el.classList.add('is-entering');
+  el.addEventListener('animationend', onEnterEnd);
+  el.addEventListener('animationcancel', onEnterEnd);
+  enterTimers.set(el, window.setTimeout(() => endEnter(el), ENTER_MS));
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -459,6 +505,8 @@ export function createTunerView(): ViewHandle {
   let phase: Phase = 'idle';
   let visible = false;
   let starting = false;
+  /** Live while a hand-pressed stop settles — see stopFromButton. */
+  let stopping = 0;
   let rafId = 0;
 
   let angle = 0;
@@ -552,6 +600,9 @@ export function createTunerView(): ViewHandle {
   let metronomeSounding = false;
   let droneSounding = false;
   let boardRows: BoardRow[] = [];
+  /** Holds the reveal class on the board for exactly as long as its animation
+      runs. See revealBoard. */
+  let revealTimer = 0;
   /** The stepped progress fill's pending writes; empty whenever the smooth
       transition is the one in use. Cleared before every restart, so a
       superseded strum cannot keep filling the bar the next one owns. */
@@ -615,7 +666,7 @@ export function createTunerView(): ViewHandle {
 
   const readout = h('div', 'tv-readout');
   const noteEl = h('div', 'tv-note');
-  const pcEl = h('span', 'tv-pc', '—');
+  const pcEl = h('span', 'tv-pc is-blank');
   const accEl = h('span', 'tv-acc');
   const octEl = h('span', 'tv-oct');
   noteEl.append(pcEl, accEl, octEl);
@@ -769,26 +820,35 @@ export function createTunerView(): ViewHandle {
   const strumTwins = h('p', 'tv-strum-twins');
   strumTwins.hidden = true;
 
-  const strumFoot = h('p', 'tv-strum-foot', 'Calibrated against real guitar recordings.');
   /* Diagnostics: the board can only be tuned against what the DEVICE heard,
      and a phone's capture path is not what a voice recorder hears. Kept in
-     memory only until saved; one capture, overwritten per strum. */
+     memory only until saved; one capture, overwritten per strum.
+
+     Dev builds only. `import.meta.env.DEV` is a compile-time constant, so in a
+     production build this whole block — the button, its listener, the WAV
+     encoder it reaches and the capture copy that feeds it — is dead code the
+     bundler drops. It was shipping to customers as a visible control on the
+     strum card, under a card that says nothing is ever recorded. */
   let lastCapture: { samples: Float32Array; sampleRate: number } | null = null;
-  const strumSave = h('button', 'btn btn-ghost tv-strum-save', 'Save last strum (debug)');
-  strumSave.type = 'button';
-  strumSave.hidden = true;
-  strumSave.addEventListener('click', () => {
-    if (!lastCapture) return;
-    const wav = encodeWav(lastCapture.samples, lastCapture.sampleRate);
-    const blob = new Blob([wav], { type: 'audio/wav' });
-    const file = new File([blob], `strum-debug-${Date.now()}.wav`, { type: 'audio/wav' });
-    const nav = navigator as Navigator & { canShare?: (d: { files: File[] }) => boolean };
-    if (nav.canShare?.({ files: [file] }) && navigator.share) {
-      void navigator.share({ files: [file], title: 'TrueString strum capture' }).catch(() => saveBlob(blob, file.name));
-      return;
-    }
-    saveBlob(blob, file.name);
-  });
+  const strumSave = import.meta.env.DEV
+    ? h('button', 'btn btn-ghost', 'Save last strum (debug)')
+    : null;
+  if (strumSave) {
+    strumSave.type = 'button';
+    strumSave.hidden = true;
+    strumSave.addEventListener('click', () => {
+      if (!lastCapture) return;
+      const wav = encodeWav(lastCapture.samples, lastCapture.sampleRate);
+      const blob = new Blob([wav], { type: 'audio/wav' });
+      const file = new File([blob], `strum-debug-${Date.now()}.wav`, { type: 'audio/wav' });
+      const nav = navigator as Navigator & { canShare?: (d: { files: File[] }) => boolean };
+      if (nav.canShare?.({ files: [file] }) && navigator.share) {
+        void navigator.share({ files: [file], title: 'TrueString strum capture' }).catch(() => saveBlob(blob, file.name));
+        return;
+      }
+      saveBlob(blob, file.name);
+    });
+  }
 
   /* The same overlay as Single mode, in the card that owns it. Both are inside
      containers that the mode switch hides outright, so the shared
@@ -814,16 +874,9 @@ export function createTunerView(): ViewHandle {
   const flowGroup = h('div', 'tv-flow-group');
   flowGroup.append(flowEl, levelEl);
   strumHead.append(flowGroup, strumCapoTag);
-  strumCard.append(
-    strumHead,
-    progressEl,
-    board,
-    strumTwins,
-    strumMsg,
-    strumFoot,
-    strumSave,
-    strumCta,
-  );
+  strumCard.append(strumHead, progressEl, board, strumTwins, strumMsg);
+  if (strumSave) strumCard.append(strumSave);
+  strumCard.append(strumCta);
   strumPanel.appendChild(strumCard);
   el.appendChild(strumPanel);
 
@@ -843,18 +896,46 @@ export function createTunerView(): ViewHandle {
     strumStartBtn.disabled = strumStarting || phase === 'starting';
   }
 
+  /**
+   * The CTA slot, in every phase it has one.
+   *
+   * Live is the phase this exists for: the mode used to open the microphone and
+   * then collapse its only control to nothing, leaving a card that is listening
+   * with no visible way to stop — which undercuts the very sentence the button
+   * sat under ("heard on-device only"). The button keeps its slot and its size
+   * and gives up its fill: primary while it is an invitation, ghost once it is
+   * the way out. Same element, same tab order, so nothing appears or vanishes.
+   */
   function setPhase(next: Phase): void {
     if (phase === next) return;
     phase = next;
     el.dataset.phase = next;
     syncStartBtn();
-    const label = next === 'starting' ? 'Starting…' : 'Start listening';
-    setText(startLabel, label);
-    setText(strumStartLabel, label);
+    const live = next === 'live';
+    const label = live ? 'Stop listening' : next === 'starting' ? 'Starting…' : 'Start listening';
+    for (const [btn, text] of [
+      [startBtn, startLabel],
+      [strumStartBtn, strumStartLabel],
+    ] as const) {
+      setText(text, label);
+      btn.classList.toggle('btn-primary', !live);
+      btn.classList.toggle('btn-ghost', live);
+      btn.setAttribute('aria-label', label);
+    }
   }
 
   function setIdleVisual(on: boolean): void {
     el.classList.toggle('is-idle', on);
+  }
+
+  /** The giant note glyph, and the shape it holds when there is no note. An
+      em-dash at 88px reads as a readout that failed to load rather than as a
+      readout with nothing to say; blank, the slot draws a quiet rule instead,
+      in a box the same height as the glyph so the first note causes no
+      reflow. */
+  function setPc(text: string): void {
+    pcEl.classList.toggle('is-blank', text === '');
+    setText(pcEl, text);
   }
 
   /** The one haptic gate in the view. Arrival at pitch and a guided confirm are
@@ -1134,6 +1215,12 @@ export function createTunerView(): ViewHandle {
       number. */
   function clearBoard(): void {
     board.classList.add('is-empty');
+    // Whatever the last strum revealed is no longer on the board, so the reveal
+    // that showed it comes off with it — along with the timer that would
+    // otherwise take the class off a run that has since been restarted.
+    window.clearTimeout(revealTimer);
+    revealTimer = 0;
+    board.classList.remove('is-revealed');
     for (let i = 0; i < boardRows.length; i++) {
       const row = boardRows[i];
       const twin = isTwin(i);
@@ -1200,6 +1287,9 @@ export function createTunerView(): ViewHandle {
 
       li.append(no, name, bar, cents, mark, note2, twin);
       li.setAttribute('aria-label', rowLabel(i, null));
+      // Its place in the reveal. Read by the stagger's animation-delay, and
+      // inherited by the row's own bar fill.
+      li.style.setProperty('--tv-row-i', String(i));
       return { el: li, bar, fill, cents, arrow, note: note2, twin };
     });
     for (const row of boardRows) board.appendChild(row.el);
@@ -1260,12 +1350,16 @@ export function createTunerView(): ViewHandle {
     const span = Math.min(Math.abs(shown), STRUM_BAR_CENTS) / STRUM_BAR_CENTS;
     row.fill.hidden = false;
     row.fill.style.width = `${(span * 50).toFixed(2)}%`;
+    // The reveal grows each fill out of the bar's zero mark, so the origin is
+    // the end that touches it — which is the end the fill is anchored by.
     if (shown < 0) {
       row.fill.style.right = '50%';
       row.fill.style.left = 'auto';
+      row.fill.style.transformOrigin = '100% 50%';
     } else {
       row.fill.style.left = '50%';
       row.fill.style.right = 'auto';
+      row.fill.style.transformOrigin = '0 50%';
     }
     row.bar.className =
       Math.abs(shown) > STRUM_BAR_CENTS
@@ -1543,7 +1637,37 @@ export function createTunerView(): ViewHandle {
       default:
         flow = 'Strum all strings once';
     }
-    setText(flowEl, flow);
+    // One sentence replacing another, faded up once on the swap that caused it.
+    // Only on a real change: renderStrum runs on every state write, and a line
+    // that re-fades saying the same thing is a blink.
+    if (flowEl.textContent !== flow) {
+      setText(flowEl, flow);
+      flowEl.classList.remove('is-swap');
+      void flowEl.offsetWidth;
+      flowEl.classList.add('is-swap');
+    }
+  }
+
+  /** The board arriving, once per analysis: six rows over 150 ms with their
+      bars growing out of the zero mark behind them. Restarted from the top on
+      every strum — a re-strum is a new answer, not numbers changing quietly
+      under the old one — and never running on anything but a strum.
+
+      The class is what SCHEDULES the run, so it comes off again the moment the
+      run is over. Left on, it re-plays every time the board goes from
+      display:none back to visible — a mode switch, a tab switch — which is six
+      rows announcing an answer nobody just asked for. The rows are fully
+      visible without it; only the arrival belongs to it. */
+  function revealBoard(): void {
+    window.clearTimeout(revealTimer);
+    board.classList.remove('is-revealed');
+    // Commit the removal, or the two writes coalesce and the run never restarts.
+    void board.offsetWidth;
+    board.classList.add('is-revealed');
+    revealTimer = window.setTimeout(() => {
+      revealTimer = 0;
+      board.classList.remove('is-revealed');
+    }, REVEAL_MS);
   }
 
   /** Condition 2, in its `blocked` scope. Shown INSTEAD of listening: the
@@ -1660,6 +1784,7 @@ export function createTunerView(): ViewHandle {
     for (let i = 0; i < boardRows.length; i++) {
       if (!isTwin(i)) fillRow(i, res.strings[i]);
     }
+    revealBoard();
     setStrumState('results');
     renderStrum();
     // Forced, for the same reason: two identical strums must be two
@@ -1753,15 +1878,19 @@ export function createTunerView(): ViewHandle {
        on arrival (see applyStrumResult) — never before. */
     const targetFreqs = targetNotes.map((note) => note.freq);
     // analyse() transfers the buffer to the worker, which detaches `samples`;
-    // the debug export needs its own copy taken before that happens.
-    const kept = samples.slice(0);
+    // the debug export needs its own copy taken before that happens. Dev builds
+    // only — in production there is no export to feed, and the copy is a couple
+    // of seconds of audio held for nothing.
+    const kept = strumSave ? samples.slice(0) : null;
     try {
       const res = await analyse(samples, sampleRate, targetFreqs);
       if (id !== strumSeq || mode !== 'strum') return;
       await settleAck();
       if (id !== strumSeq || mode !== 'strum') return;
-      lastCapture = { samples: kept, sampleRate };
-      strumSave.hidden = false;
+      if (strumSave && kept) {
+        lastCapture = { samples: kept, sampleRate };
+        strumSave.hidden = false;
+      }
       applyStrumResult(res);
     } catch {
       if (id !== strumSeq || mode !== 'strum') return;
@@ -2110,6 +2239,15 @@ export function createTunerView(): ViewHandle {
     strings.hidden = strum;
     status.hidden = strum;
     strumPanel.hidden = !strum;
+    // The mode that arrived fades in, the one that left snaps out — the same
+    // enter every other content swap in the app uses. Single mode's card and
+    // strip come back together, so they run the one animation side by side.
+    if (strum) {
+      enter(strumPanel);
+    } else {
+      enter(card);
+      enter(strings);
+    }
     // Leaving the mode empties its region, so re-entering on the same state
     // (an unsupported tuning, say) is a real mutation again and is spoken.
     if (!strum) setText(strumLive, '');
@@ -2263,7 +2401,7 @@ export function createTunerView(): ViewHandle {
     setInTune(false, now);
     setIdleVisual(true);
     setActiveString(-1);
-    setText(pcEl, '—');
+    setPc('');
     setText(accEl, '');
     setText(octEl, '');
     setText(freqEl, '—');
@@ -2294,7 +2432,7 @@ export function createTunerView(): ViewHandle {
         relaxed = false;
         setIdleVisual(false);
         targetAngle = centsToDeg(heldCents);
-        setText(pcEl, held.pc.charAt(0));
+        setPc(held.pc.charAt(0));
         setText(accEl, held.pc.length > 1 ? '♯' : '');
         setText(octEl, String(held.octave));
         setText(freqEl, formatFreq(freq));
@@ -2367,7 +2505,7 @@ export function createTunerView(): ViewHandle {
     setIdleVisual(false);
     targetAngle = centsToDeg(cents);
 
-    setText(pcEl, pc.charAt(0));
+    setPc(pc.charAt(0));
     setText(accEl, pc.length > 1 ? '♯' : '');
     setText(octEl, String(octave));
     setText(freqEl, formatFreq(freq));
@@ -2570,10 +2708,45 @@ export function createTunerView(): ViewHandle {
     relax(true);
   }
 
+  /**
+   * One control, both directions — the same button the player pressed to start.
+   * Stopping goes out through the paths hide() uses, so a microphone closed by
+   * hand is closed exactly as thoroughly as one closed by leaving the tab.
+   *
+   * The direction is read from the phase, and stopping rewrites the phase in the
+   * same frame: without a guard the second half of a bounced double-tap reads
+   * the button it has just turned back into Start and opens the microphone
+   * again, 30 ms after closing it. `stopping` is the counterpart of `starting` —
+   * while it is set the control is inert in both directions, since neither
+   * meaning of a second tap inside a double-tap window is one the player asked
+   * for. Only the button goes through this; hide() and the mode switch call
+   * stop() directly, and neither is a tap that can bounce.
+   */
+  function stopFromButton(alsoStrum: boolean): void {
+    if (stopping || phase !== 'live') return;
+    stopping = window.setTimeout(() => {
+      stopping = 0;
+    }, STOP_SETTLE_MS);
+    // The tap first, then the stream both modes share: a capture left reading
+    // a closed microphone is the one order that cannot work.
+    if (alsoStrum) stopStrum();
+    stop();
+  }
+
   startBtn.addEventListener('click', () => {
+    if (stopping) return;
+    if (phase === 'live') {
+      stopFromButton(false);
+      return;
+    }
     void start();
   });
   strumStartBtn.addEventListener('click', () => {
+    if (stopping) return;
+    if (phase === 'live') {
+      stopFromButton(true);
+      return;
+    }
     void startStrum();
   });
   retryBtn.addEventListener('click', () => {

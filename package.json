@@ -1,8 +1,8 @@
 {
   "name": "guitartunefree",
   "private": true,
-  "version": "2.2.0",
-  "description": "TrueString — a free, lightweight guitar tuner and metronome. Auto tuner, manual tuner, tuning presets. Web + Android.",
+  "version": "2.3.0",
+  "description": "Precision guitar tuner and metronome. Single-string and full-strum tuning, sweetened presets, speed trainer. No ads, no accounts.",
   "type": "module",
   "scripts": {
     "dev": "vite",

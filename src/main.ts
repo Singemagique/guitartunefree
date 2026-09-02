@@ -35,6 +35,9 @@ const A4_MIN = 415;
 const A4_MAX = 466;
 const A4_DEFAULT = 440;
 const SHEET_EXIT_MS = 280;
+/** The popover's fade-out, matching its own transition. `hidden` waits this
+    long so the exit can play — the same deferral the sheet has always used. */
+const POP_EXIT_MS = 130;
 
 /** Section order in the tuning sheet; empty groups are skipped. */
 const GROUP_ORDER: readonly TuningGroup[] = ['Guitar', 'Bass', 'Ukulele', 'Mandolin', 'Custom'];
@@ -167,6 +170,53 @@ function attachRepeat(btn: HTMLButtonElement, step: () => void): void {
   btn.addEventListener('keyup', (e) => {
     if (e.key === 'Enter' || e.key === ' ') end();
   });
+}
+
+/**
+ * The one content-swap enter, shared by every panel in the app (style.css owns
+ * the keyframe). Re-entry restarts it rather than stacking: flipping between
+ * two tabs faster than 220 ms must play one fade per swap, not a queue of them.
+ * The listener is a single named function, so repeated calls on the same
+ * element register it once.
+ *
+ * The class SCHEDULES the animation, so leaving it on a panel is leaving the
+ * animation armed: the next time that panel goes from display:none back to
+ * visible it plays again, on a swap nobody performed. Every ending therefore
+ * has to take it off, and a run has three of them — it finishes, it is
+ * cancelled, or it is torn out of the render tree in the same task it was
+ * started in (a tab switched away in the frame the mode changed), which fires
+ * no event at all because the animation was never once sampled. The two
+ * listeners cover the first two; the timer covers the third, and nothing else
+ * can.
+ */
+const ENTER_MS = 400;
+/** Panels with an enter in flight, against the backstop above. */
+const enterTimers = new WeakMap<HTMLElement, number>();
+
+function endEnter(node: HTMLElement): void {
+  window.clearTimeout(enterTimers.get(node));
+  enterTimers.delete(node);
+  node.classList.remove('is-entering');
+  node.removeEventListener('animationend', onEnterEnd);
+  node.removeEventListener('animationcancel', onEnterEnd);
+}
+
+function onEnterEnd(e: AnimationEvent): void {
+  const node = e.currentTarget as HTMLElement;
+  // A child's own animation ending is not this one finishing.
+  if (e.target !== node || e.animationName !== 'view-enter') return;
+  endEnter(node);
+}
+
+function enter(el: HTMLElement): void {
+  endEnter(el);
+  // Commit the removal, or the two writes coalesce and a run already in flight
+  // simply carries on from where it was.
+  void el.offsetWidth;
+  el.classList.add('is-entering');
+  el.addEventListener('animationend', onEnterEnd);
+  el.addEventListener('animationcancel', onEnterEnd);
+  enterTimers.set(el, window.setTimeout(() => endEnter(el), ENTER_MS));
 }
 
 function tabMarkup(id: TabId): string {
@@ -323,11 +373,18 @@ fadeOnOverflow(
 
 let activeTab: TabId = 'tuner';
 
+/** Where each tab was left. One scroll container serves all three, so without
+    this a tab you had scrolled to the bottom hands its offset to the next one —
+    which lands mid-view with its mode control clipped under the header and
+    reads as a screen that failed to draw. */
+const scrollPos: Partial<Record<TabId, number>> = {};
+
 function setTab(next: TabId, moveFocus = false): void {
   if (tabs[next].getAttribute('aria-selected') === 'true') {
     if (moveFocus) tabs[next].focus();
     return;
   }
+  scrollPos[activeTab] = viewRoot.scrollTop;
   activeTab = next;
   for (const id of TAB_IDS) {
     const isActive = id === next;
@@ -338,11 +395,14 @@ function setTab(next: TabId, moveFocus = false): void {
     if (isActive) {
       view.el.hidden = false;
       view.show();
+      enter(view.el);
     } else {
       view.hide();
       view.el.hidden = true;
     }
   }
+  // After the swap, so the box being scrolled is the one now holding content.
+  viewRoot.scrollTop = scrollPos[next] ?? 0;
   if (moveFocus) tabs[next].focus();
 }
 
@@ -537,9 +597,9 @@ function stepButton(icon: string, step: () => void): HTMLButtonElement {
 /**
  * One string: its note on the first line, its sweetening on the second. Both
  * lines are built either way — four 44px targets, two readouts and two labels do
- * not fit across a 320px sheet, and a target that has to shrink to fit is the
- * wrong thing to give up — and the stylesheet lays them side by side from 360px
- * up, where they do fit.
+ * not fit across a phone-width sheet, and a target that has to shrink to fit is
+ * the wrong thing to give up — and the stylesheet lays them side by side from
+ * 400px up, where they measurably do fit.
  */
 function buildStringRows(): void {
   editorStrings.textContent = '';
@@ -671,6 +731,7 @@ function previewText(): string {
 }
 
 function setSheetMode(mode: SheetMode): void {
+  const changed = sheetMode !== mode;
   sheetMode = mode;
   const editing = mode === 'editor';
   tuningList.hidden = editing;
@@ -683,6 +744,9 @@ function setSheetMode(mode: SheetMode): void {
   setText(sheetNote, '');
   setText(sheetTitle, editing ? (editorId ? 'Edit tuning' : 'New tuning') : 'Tuning');
   sheetClose.setAttribute('aria-label', editing ? 'Close tuning editor' : 'Close tuning list');
+  // The panel that arrived fades in; the one that left snaps out. Opacity and
+  // transform only, so the sheet's height is the same before and after.
+  if (changed) enter(editing ? editorForm : tuningList);
 }
 
 function disarmDelete(): void {
@@ -941,8 +1005,15 @@ scrim.addEventListener('click', closeSheet);
 
 /* ---------- calibration popover ---------- */
 
+let popoverHideTimer = 0;
+// `popover.hidden` lags the close by POP_EXIT_MS so the fade-out can play, so
+// open/closed state is tracked here instead — exactly as the sheet does it.
+let popoverOpen = false;
+
 function openPopover(): void {
-  if (!popover.hidden) return;
+  window.clearTimeout(popoverHideTimer);
+  if (popoverOpen) return;
+  popoverOpen = true;
   popover.hidden = false;
   gearBtn.setAttribute('aria-expanded', 'true');
   requestAnimationFrame(() => popover.classList.add('is-open'));
@@ -950,11 +1021,17 @@ function openPopover(): void {
 }
 
 function closePopover(restoreFocus = false): void {
-  if (popover.hidden) return;
+  if (!popoverOpen) return;
+  popoverOpen = false;
   popover.classList.remove('is-open');
-  popover.hidden = true;
   gearBtn.setAttribute('aria-expanded', 'false');
   if (restoreFocus) gearBtn.focus();
+  // It went out the way it came in rather than being cut mid-frame; a reopen
+  // inside the window clears this and fades the same panel back.
+  popoverHideTimer = window.setTimeout(() => {
+    if (popoverOpen) return;
+    popover.hidden = true;
+  }, POP_EXIT_MS);
 }
 
 function nudgeA4(delta: number): void {
@@ -963,8 +1040,8 @@ function nudgeA4(delta: number): void {
 }
 
 gearBtn.addEventListener('click', () => {
-  if (popover.hidden) openPopover();
-  else closePopover(true);
+  if (popoverOpen) closePopover(true);
+  else openPopover();
 });
 a4Dec.addEventListener('click', () => nudgeA4(-1));
 a4Inc.addEventListener('click', () => nudgeA4(1));
@@ -979,7 +1056,7 @@ popover.addEventListener('focusout', (e) => {
 });
 
 document.addEventListener('pointerdown', (e) => {
-  if (popover.hidden) return;
+  if (!popoverOpen) return;
   const target = e.target;
   if (target instanceof Node && (popover.contains(target) || gearBtn.contains(target))) return;
   closePopover();
@@ -990,7 +1067,7 @@ document.addEventListener('keydown', (e) => {
     if (sheetOpen) {
       e.preventDefault();
       closeSheet();
-    } else if (!popover.hidden) {
+    } else if (popoverOpen) {
       e.preventDefault();
       closePopover(true);
     }

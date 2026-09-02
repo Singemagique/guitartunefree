@@ -50,7 +50,9 @@ const SWING_DEG = 26;
 /** Skip an arm write below this many degrees of change. */
 const ANGLE_EPSILON = 0.05;
 
-const REST_COUNT = '–';
+/** The beat unit every meter in this app counts in: the engine's beat is a
+    quarter note, so a bar of N beats is N/4. */
+const METER_UNIT = 4;
 const TAP_HINT = 'Tap along with any song and the BPM follows.';
 /** While the trainer owns the tempo the plain hint is a lie — the climb moves
     the BPM off any tapped number within a bar. What a tap does instead is set
@@ -64,6 +66,11 @@ const TAP_REVERT_MS = 2500;
     a backlog rather than feedback. The announcement waits for the value to
     settle instead. */
 const LIVE_SETTLE_MS = 450;
+
+/** Big view's fade-out, matching the class's own transition. The overlay owns
+    the whole screen, so it leaves the way the tuning sheet does — the visual
+    first, the state a beat later. */
+const BIG_EXIT_MS = 130;
 
 /** Haptic beat: long enough to feel through a pocket, short enough not to buzz
     into the next beat even at 300 BPM (200 ms apart). */
@@ -111,17 +118,18 @@ const ICON_SPEAKER = `<svg ${SVG_ATTRS}>
   <g class="nv-ico-on"><path d="M15.6 9.6a3.4 3.4 0 0 1 0 4.8"/><path d="M18.2 7.2a7 7 0 0 1 0 9.6"/></g>
   <g class="nv-ico-off"><path d="M16.4 9.8 21 14.4"/><path d="M21 9.8l-4.6 4.6"/></g>
 </svg>`;
-/** Swinging arm / arm at rest with a strike-through. */
+/**
+ * A pendulum: pivot, upright rod, bob. One drawing for both states — the swung
+ * version had the arm off at an angle with a motion arc beside it, which at
+ * 20px is three unrelated marks rather than an instrument, and the arc read as
+ * a stray stroke. The state is carried by the strike-through alone, exactly as
+ * it is on the mute toggle next to it.
+ */
 const ICON_PENDULUM = `<svg ${SVG_ATTRS}>
   <circle cx="12" cy="19.8" r="1.4"/>
-  <g class="nv-ico-on">
-    <path d="M12 19.8 16.4 7.2"/>
-    <ellipse cx="15.2" cy="10.7" rx="2.2" ry="1.7"/>
-    <path d="M6.4 9.2a9.4 9.4 0 0 1 1.7-3.2"/>
-  </g>
+  <path d="M12 19.8V7.4"/>
+  <ellipse cx="12" cy="9.6" rx="2.2" ry="1.7"/>
   <g class="nv-ico-off">
-    <path d="M12 19.8V7.4"/>
-    <ellipse cx="12" cy="9.6" rx="2.2" ry="1.7"/>
     <path d="M4.6 4.6 19.4 19.4"/>
   </g>
 </svg>`;
@@ -164,6 +172,12 @@ function tempoName(bpm: number): string {
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+/** "4 bars", "1 bar". The practice steppers carry their own unit now that the
+    sentence around them is gone, and every one of them can reach 1. */
+function bars(n: number): string {
+  return `${n} ${n === 1 ? 'bar' : 'bars'}`;
 }
 
 function bagOf(value: unknown): Record<string, unknown> {
@@ -237,6 +251,41 @@ function replay(el: HTMLElement, cls: string): void {
   el.classList.add(cls);
 }
 
+/**
+ * The shared content-swap enter (style.css owns the keyframe and the class).
+ * Duplicated rather than imported, the way attachRepeat is. Re-entry restarts
+ * the run instead of stacking on it, and every way a run can end takes the
+ * class off again — it finishes, it is cancelled, or it is torn out of the
+ * render tree in the same task it started in (the big-view stage, on a tab
+ * switched away as it opened), which fires no event at all. Left on, the class
+ * re-arms the animation for the next time the element is shown.
+ */
+const ENTER_MS = 400;
+const enterTimers = new WeakMap<HTMLElement, number>();
+
+function endEnter(node: HTMLElement): void {
+  window.clearTimeout(enterTimers.get(node));
+  enterTimers.delete(node);
+  node.classList.remove('is-entering');
+  node.removeEventListener('animationend', onEnterEnd);
+  node.removeEventListener('animationcancel', onEnterEnd);
+}
+
+function onEnterEnd(e: AnimationEvent): void {
+  const node = e.currentTarget as HTMLElement;
+  if (e.target !== node || e.animationName !== 'view-enter') return;
+  endEnter(node);
+}
+
+function enter(node: HTMLElement): void {
+  endEnter(node);
+  void node.offsetWidth;
+  node.classList.add('is-entering');
+  node.addEventListener('animationend', onEnterEnd);
+  node.addEventListener('animationcancel', onEnterEnd);
+  enterTimers.set(node, window.setTimeout(() => endEnter(node), ENTER_MS));
+}
+
 function polar(deg: number, r: number): { x: number; y: number } {
   const a = (deg * Math.PI) / 180;
   return { x: PIVOT_X + r * Math.sin(a), y: PIVOT_Y - r * Math.cos(a) };
@@ -268,6 +317,20 @@ function miniStepper(name: string, group: string, down: string, up: string): str
         <span class="nv-mini-value nv-${name}-value"></span>
         <button class="icon-btn nv-mini-btn nv-${name}-up" type="button" aria-label="${up}"><span aria-hidden="true">+</span></button>
       </span>`;
+}
+
+/**
+ * One practice setting: what it is on the left, the stepper that sets it on the
+ * right — the same shape as the Beats per bar and Subdivision rows above. It
+ * used to be a sentence with the steppers set into its clauses, which wrapped
+ * into a different arrangement at every screen width. The label is decorative:
+ * each stepper already carries its own spoken group name.
+ */
+function practiceRow(label: string, stepper: string): string {
+  return `<div class="nv-prac-row">
+          <span class="nv-prac-word" aria-hidden="true">${label}</span>
+          ${stepper}
+        </div>`;
 }
 
 /**
@@ -355,6 +418,8 @@ export function createMetronomeView(): ViewHandle {
   let saveTimer = 0;
   let scroller: HTMLElement | null = null;
   let scrollTop = 0;
+  /** Holds `.is-big` on screen while its fade-out plays. */
+  let bigExitTimer = 0;
   /** The tempo a trainer run climbs from: taken when the trainer is switched on
       and re-taken on every hand edit while it is on. Without it a run that ends
       on the target leaves the tempo parked there, and every later start is a
@@ -395,7 +460,7 @@ export function createMetronomeView(): ViewHandle {
     <div class="card nv-stage is-idle">
       <div class="nv-stage-head">
         <div class="nv-stage-read">
-          <span class="nv-count" aria-hidden="true">${REST_COUNT}</span>
+          <span class="nv-count" aria-hidden="true">${DEFAULT_BPB}/${METER_UNIT}</span>
           <span class="nv-stage-bpm" aria-hidden="true">${DEFAULT_BPM} BPM</span>
           <span class="nv-muted-tag" hidden>${ICON_MUTED_TAG}Click muted</span>
           <span class="nv-gap-tag">${ICON_GAP_TAG}Count it</span>
@@ -447,11 +512,9 @@ export function createMetronomeView(): ViewHandle {
         </button>
         <p class="sr-only nv-trainer-live" aria-live="polite"></p>
         <div class="nv-prac-cfg nv-trainer-cfg" hidden>
-          ${miniStepper('add', 'Tempo added each step', 'Smaller tempo step', 'Bigger tempo step')}
-          <span class="nv-prac-word">BPM every</span>
-          ${miniStepper('bars', 'Bars between steps', 'Fewer bars between steps', 'More bars between steps')}
-          <span class="nv-prac-word">bars, up to</span>
-          ${miniStepper('target', 'Target tempo', 'Lower target tempo', 'Higher target tempo')}
+          ${practiceRow('Step', miniStepper('add', 'Tempo added each step', 'Smaller tempo step', 'Bigger tempo step'))}
+          ${practiceRow('Every', miniStepper('bars', 'Bars between steps', 'Fewer bars between steps', 'More bars between steps'))}
+          ${practiceRow('Up to', miniStepper('target', 'Target tempo', 'Lower target tempo', 'Higher target tempo'))}
         </div>
       </div>
       <div class="nv-prac">
@@ -462,10 +525,8 @@ export function createMetronomeView(): ViewHandle {
         </button>
         <p class="sr-only nv-gap-live" aria-live="polite"></p>
         <div class="nv-prac-cfg nv-gap-cfg" hidden>
-          ${miniStepper('play', 'Bars with the click', 'Fewer sounding bars', 'More sounding bars')}
-          <span class="nv-prac-word">bars on /</span>
-          ${miniStepper('rest', 'Bars of silence', 'Fewer silent bars', 'More silent bars')}
-          <span class="nv-prac-word">off</span>
+          ${practiceRow('Play', miniStepper('play', 'Bars with the click', 'Fewer sounding bars', 'More sounding bars'))}
+          ${practiceRow('Rest', miniStepper('rest', 'Bars of silence', 'Fewer silent bars', 'More silent bars'))}
         </div>
       </div>
     </div>`;
@@ -568,6 +629,13 @@ export function createMetronomeView(): ViewHandle {
     dots = Array.from(dotsEl.querySelectorAll<HTMLElement>('.nv-dot'));
   }
 
+  /** What the counter reads when nothing is running: the meter it is about to
+      count in. A placeholder dash there read as a display that had failed to
+      load — on the one surface of the app that is nothing but a big number. */
+  function idleCount(): string {
+    return `${beatsPerBar}/${METER_UNIT}`;
+  }
+
   function setBeatsPerBar(next: number): void {
     const n = clamp(Math.round(next), BPB_MIN, BPB_MAX);
     if (n === beatsPerBar) return;
@@ -575,6 +643,8 @@ export function createMetronomeView(): ViewHandle {
     metro.beatsPerBar = n;
     bpbValue.textContent = String(n);
     buildDots();
+    // Changing the meter while stopped changes what the stage is announcing.
+    if (!metro.running) countEl.textContent = idleCount();
   }
 
   function setSubdivision(next: Subdivision): void {
@@ -600,9 +670,9 @@ export function createMetronomeView(): ViewHandle {
       downbeat — so an edit mid-run lands on the next bar without a restart. */
   function renderTrainer(): void {
     const t = prefs.trainer;
-    addValue.textContent = `+${t.add}`;
-    barsValue.textContent = String(t.bars);
-    targetValue.textContent = String(t.target);
+    addValue.textContent = `+${t.add} BPM`;
+    barsValue.textContent = bars(t.bars);
+    targetValue.textContent = `${t.target} BPM`;
     trainerSum.textContent = `+${t.add} BPM / ${t.bars} bars → ${t.target}`;
     trainerSum.hidden = t.on;
     trainerBtn.setAttribute('aria-pressed', t.on ? 'true' : 'false');
@@ -616,8 +686,8 @@ export function createMetronomeView(): ViewHandle {
 
   function renderGap(): void {
     const g = prefs.gap;
-    playValue.textContent = String(g.play);
-    restValue.textContent = String(g.mute);
+    playValue.textContent = bars(g.play);
+    restValue.textContent = bars(g.mute);
     gapSum.textContent = `${g.play} bars on / ${g.mute} off`;
     gapSum.hidden = g.on;
     gapBtn.setAttribute('aria-pressed', g.on ? 'true' : 'false');
@@ -752,7 +822,7 @@ export function createMetronomeView(): ViewHandle {
       stopLoop();
       settle();
       countEl.classList.remove('is-accent');
-      countEl.textContent = REST_COUNT;
+      countEl.textContent = idleCount();
       stage.classList.remove('is-gap');
     }
     if (running === wasRunning) return;
@@ -822,40 +892,74 @@ export function createMetronomeView(): ViewHandle {
     }
   }
 
+  /** The overlay's own exit, and the class removal it defers. Mirrors the
+      tuning sheet: the visual leaves over BIG_EXIT_MS, the state does not. */
+  function dropBig(): void {
+    window.clearTimeout(bigExitTimer);
+    bigExitTimer = 0;
+    stage.classList.remove('is-big', 'is-closing');
+    document.body.classList.remove(BIG_BODY_CLASS);
+    // .view-root is shared with the other views, so the offset only goes back
+    // if this view is still the one on screen — and only once the stage is back
+    // in the flow, or the container it scrolls is still collapsed.
+    if (visible && scroller) scroller.scrollTop = scrollTop;
+    scroller = null;
+  }
+
   function setBig(on: boolean, restoreFocus = true): void {
     if (big === on) return;
     big = on;
+    // A reopen inside the exit window cancels a fade that is still running, and
+    // the stage it cancels is still fixed.
+    const cancelledExit = bigExitTimer !== 0;
+    window.clearTimeout(bigExitTimer);
+    bigExitTimer = 0;
     if (on) {
       // Going fixed pulls the stage out of the flow, which collapses the scroll
       // container under it and makes the browser clamp scrollTop; the offset is
-      // only recoverable if it is read before the class lands.
-      scroller = el.closest<HTMLElement>('.view-root');
-      scrollTop = scroller?.scrollTop ?? 0;
+      // only recoverable if it is read before the class lands. Reopening on top
+      // of a cancelled exit is exactly the case where it cannot be read again —
+      // the container has been collapsed since the first open — so that open's
+      // reading is the one that stands.
+      if (!cancelledExit) {
+        scroller = el.closest<HTMLElement>('.view-root');
+        scrollTop = scroller?.scrollTop ?? 0;
+      }
       stage.setAttribute('role', 'dialog');
       stage.setAttribute('aria-modal', 'true');
       stage.setAttribute('aria-label', 'Metronome big view');
+      stage.classList.remove('is-closing');
+      stage.classList.add('is-big');
+      document.body.classList.add(BIG_BODY_CLASS);
     }
-    stage.classList.toggle('is-big', on);
     bigBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    document.body.classList.toggle(BIG_BODY_CLASS, on);
     setOutsideInert(on);
     if (on) {
       document.addEventListener('keydown', onBigKey);
+      // The overlay is the whole screen, so it arrives the way every other
+      // content swap in the app does rather than being cut in.
+      enter(stage);
       stageTransport.focus();
     } else {
       document.removeEventListener('keydown', onBigKey);
       stage.removeAttribute('role');
       stage.removeAttribute('aria-modal');
       stage.removeAttribute('aria-label');
-      // .view-root is shared with the other views, so the offset only goes back
-      // if this view is still the one on screen.
-      if (visible && scroller) scroller.scrollTop = scrollTop;
-      scroller = null;
       // Unconditional: closing the overlay by hand always hands focus back to
       // the button that opened it, wherever it had wandered. Only the tab-switch
       // teardown passes restoreFocus false, and it is the one path that must not
       // pull focus into a view being taken off screen.
-      if (restoreFocus) bigBtn.focus();
+      if (restoreFocus) {
+        // Closed by hand: fade it, then let it go. The button focus lands now —
+        // it is inside the stage, which is still on screen for the fade.
+        bigBtn.focus();
+        stage.classList.add('is-closing');
+        bigExitTimer = window.setTimeout(dropBig, BIG_EXIT_MS);
+      } else {
+        // Torn down with the tab. There is nothing left to watch the fade, and
+        // a body still locked for scrolling 130 ms into the next view is a bug.
+        dropBig();
+      }
     }
   }
 

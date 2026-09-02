@@ -12,7 +12,7 @@
   position: relative;
   padding: 18px 12px 20px;
   overflow: hidden;
-  transition: box-shadow 260ms ease, border-color 260ms ease;
+  transition: box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 
 /* Warm stage glow rising behind the arc; turns green when in tune. */
@@ -27,7 +27,7 @@
   background: radial-gradient(50% 50% at 50% 50%, rgba(255, 180, 84, 0.13), transparent 72%);
   opacity: 0.55;
   pointer-events: none;
-  transition: background 320ms ease, opacity 320ms ease;
+  transition: background var(--dur-slow) var(--ease), opacity var(--dur-slow) var(--ease);
 }
 
 .tv.is-intune .tv-card {
@@ -69,7 +69,7 @@
   stroke-width: 4;
   stroke-linecap: round;
   opacity: 0.2;
-  transition: opacity 220ms ease, filter 220ms ease;
+  transition: opacity var(--dur) var(--ease), filter var(--dur) var(--ease);
 }
 
 .tv.is-intune .tv-zone {
@@ -109,7 +109,7 @@
   will-change: transform;
   /* The rAF loop owns the angle (α = 0.25); a transform transition on top of
      it would filter the motion a second time. */
-  transition: opacity 320ms ease;
+  transition: opacity var(--dur-slow) var(--ease);
 }
 
 .tv.is-idle .tv-needle {
@@ -122,7 +122,7 @@
   stroke-width: 1.4;
   stroke-linejoin: round;
   filter: drop-shadow(0 0 6px rgba(255, 180, 84, 0.42));
-  transition: fill 240ms ease, stroke 240ms ease, filter 240ms ease;
+  transition: fill var(--dur) var(--ease), stroke var(--dur) var(--ease), filter var(--dur) var(--ease);
 }
 
 .tv.is-intune .tv-needle-blade {
@@ -139,7 +139,7 @@
 
 .tv-hub-dot {
   fill: var(--amber);
-  transition: fill 240ms ease;
+  transition: fill var(--dur) var(--ease);
 }
 
 .tv.is-intune .tv-hub-dot {
@@ -160,8 +160,9 @@
 }
 
 /* Idle dims the giant glyph with opacity — it clears the 3:1 large-text bar
-   at 3.56:1 — but the 12/15 px hint and metrics get a dim colour instead:
-   --muted at 42% renders 2.07:1 on the card, far under the 4.5:1 AA floor. */
+   at 3.56:1 — but the 12/15 px hint and metrics keep a full-strength colour
+   instead: --muted faded to 42% renders 2.07:1 on the card, far under the
+   4.5:1 AA floor, where --muted itself clears it. */
 .tv.is-idle .tv-note {
   opacity: 0.42;
 }
@@ -169,7 +170,7 @@
 .tv.is-idle .tv-metrics,
 .tv.is-idle .tv-cents,
 .tv.is-idle .tv-hint {
-  color: #808b95;
+  color: var(--muted);
 }
 
 .tv-note {
@@ -179,11 +180,33 @@
   font-size: clamp(60px, 21vw, 88px);
   letter-spacing: -0.03em;
   color: var(--text);
-  transition: color 240ms ease, text-shadow 240ms ease, opacity 320ms ease;
+  transition: color var(--dur) var(--ease), text-shadow var(--dur) var(--ease),
+    opacity var(--dur-slow) var(--ease);
 }
 
 .tv-pc {
   font-weight: 600;
+}
+
+/* Nothing heard yet. An em-dash at 88px reads as a readout that failed to load,
+   so the slot holds a quiet rule instead — the shape of a blank, not of a
+   value. The box keeps the glyph's own line height (0.92em, the same figure
+   .tv-note sets), so the first real note lands with zero reflow. */
+.tv-pc.is-blank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 0.92em;
+}
+
+.tv-pc.is-blank::before {
+  content: "";
+  display: inline-block;
+  width: 36px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--muted);
+  opacity: 0.25;
 }
 
 .tv-acc {
@@ -222,7 +245,7 @@
   font-size: 15px;
   letter-spacing: 0.01em;
   color: var(--muted);
-  transition: color 240ms ease;
+  transition: color var(--dur) var(--ease);
 }
 
 .tv-sep {
@@ -235,7 +258,7 @@
   min-width: 4ch;
   font-weight: 600;
   color: var(--text);
-  transition: color 240ms ease;
+  transition: color var(--dur) var(--ease);
 }
 
 .tv.is-intune .tv-cents {
@@ -249,11 +272,11 @@
   gap: 6px;
   min-height: 1.15em;
   font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.13em;
+  font-weight: 700;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
-  transition: color 240ms ease;
+  transition: color var(--dur) var(--ease);
 }
 
 .tv.is-intune .tv-hint {
@@ -297,11 +320,11 @@
   text-overflow: ellipsis;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.13em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
-  transition: color 240ms ease;
+  transition: color var(--dur) var(--ease);
 }
 
 .tv-strings-title.is-done {
@@ -370,8 +393,19 @@
 }
 
 .tv-string-oct {
-  font-size: 0.74em;
+  font-size: 11px;
   opacity: 0.65;
+}
+
+/* Unguided, a pill is a read-only list item: it says which note the string is
+   meant to sound and nothing about it is tappable. The chrome comes off so the
+   strip stops offering six buttons that do not exist — same box, same metrics,
+   so nothing moves. The nearest-string highlight keeps its fill: that one is a
+   live reading, not an affordance. */
+.tv:not(.is-guided) .tv-strip .tv-string:not(.is-active) {
+  border-color: transparent;
+  background: none;
+  color: var(--muted);
 }
 
 /* ---------- guided tuning ---------- */
@@ -492,10 +526,27 @@
   backdrop-filter: blur(2px);
 }
 
+/* Listening: the same slot, still holding a control. The overlay is gone — the
+   card underneath is the whole point of the state — but the button stays where
+   the finger left it and becomes the way out, because an app that has opened
+   the microphone must show how to close it. */
+.tv[data-phase="live"] .tv-cta {
+  display: grid;
+  justify-items: center;
+  padding-top: 14px;
+}
+
+/* The privacy line belongs to the invitation, not to the running state: it
+   answers "what happens if I start", which by now has been answered. */
+.tv[data-phase="live"] .tv-cta-note {
+  display: none;
+}
+
 .tv .tv-start {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  min-height: 44px;
   padding-inline: 22px;
   font-size: 16px;
 }
@@ -513,8 +564,8 @@
 .tv-cta-note {
   max-width: 30ch;
   margin: 0;
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.45;
   text-align: center;
   color: var(--muted);
 }
@@ -527,35 +578,27 @@
   justify-content: center;
   gap: 8px;
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
+  font-weight: 700;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
 }
 
+/* A static halo, held for as long as the microphone is open. It used to breathe
+   on a 1.9 s clock, which is rhythmic luminance — the one thing this product
+   promises never to do. The shape below is the design the reduced-motion build
+   always shipped; it is now the only one. */
 .tv-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--amber);
-  animation: tv-pulse 1.9s ease-out infinite;
+  box-shadow: 0 0 0 3px rgba(255, 180, 84, 0.28);
 }
 
 .tv.is-intune .tv-dot {
   background: var(--green);
-  animation: none;
-}
-
-@keyframes tv-pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(255, 180, 84, 0.45);
-  }
-  70% {
-    box-shadow: 0 0 0 9px rgba(255, 180, 84, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(255, 180, 84, 0);
-  }
+  box-shadow: 0 0 0 3px rgba(99, 214, 140, 0.28);
 }
 
 /* ---------- mic denied / error ---------- */
@@ -616,6 +659,43 @@
   gap: 7px;
 }
 
+/* One thumb that slides, instead of two fills that swap. Transform only, one
+   shot per tap, at the same rate as everything else that changes state.
+   Geometry: the track is 4px of padding either side and 4px between the items,
+   so each item is calc(50% - 6px) wide and the second one starts 4px past the
+   first's right edge — which is the translate below, to the pixel.
+   This is the only two-item .seg in the app; the four-item subdivision control
+   keeps the shared per-item fill. */
+.tv-modes {
+  position: relative;
+}
+
+.tv-modes::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc(50% - 6px);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, var(--amber), var(--amber-deep));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 3px 12px var(--amber-glow);
+  transition: transform var(--dur) var(--ease);
+}
+
+.tv[data-mode="strum"] .tv-modes::before {
+  transform: translateX(calc(100% + 4px));
+}
+
+/* The thumb IS the active fill now; the item keeps only its ink colour, which
+   goes on fading at its own rate. */
+.tv-modes .seg-item.is-active {
+  background: none;
+  box-shadow: none;
+}
+
 /* ---------- strum panel ---------- */
 
 .tv-strum {
@@ -659,6 +739,19 @@
   color: var(--muted);
 }
 
+/* One sentence replacing another is a change of meaning, and a hard text swap
+   at 11px is easy to miss entirely. The new line fades up once, on the swap
+   that caused it — never on a clock, and never more than once per state. */
+.tv-flow.is-swap {
+  animation: tv-flow-in var(--dur-fast) var(--ease);
+}
+
+@keyframes tv-flow-in {
+  from {
+    opacity: 0;
+  }
+}
+
 /* ---------- results board ---------- */
 
 .tv-board {
@@ -679,6 +772,43 @@
   gap: 8px;
   min-height: 38px;
   padding: 0 2px;
+}
+
+/* The board arriving, once per strum. Six rows over 150 ms, settled inside
+   400 ms: the differentiating feature's payoff used to land like a spreadsheet
+   refresh — every number replaced in one frame, with nothing to say a new
+   reading had arrived. One response per user strum, and one only: this class
+   SCHEDULES the run, so the view takes it off again as soon as the run is over
+   (see revealBoard) — held on, it would replay in full every time the board
+   went from display:none back to visible. Never looping, and the global
+   reduced-motion clamp flattens it to an instant swap — durations and delays
+   both, or `backwards` would hold each row invisible through a delay that was
+   never cut. That fill is what makes the stagger a stagger here rather than six
+   rows appearing at once and re-fading. */
+.tv-board.is-revealed .tv-row {
+  animation: tv-row-in var(--dur-fast) var(--ease) backwards;
+  animation-delay: calc(var(--tv-row-i, 0) * 30ms);
+}
+
+.tv-board.is-revealed .tv-bar-fill {
+  animation: tv-bar-in var(--dur) var(--ease) backwards;
+  animation-delay: calc(var(--tv-row-i, 0) * 30ms);
+}
+
+@keyframes tv-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+/* Grown from the zero mark outwards — the origin is written inline with the
+   fill's own anchor (see fillRow), because which end is the centre of the bar
+   depends on which side of pitch the string is. */
+@keyframes tv-bar-in {
+  from {
+    transform: scaleX(0);
+  }
 }
 
 .tv-row-no {
@@ -913,10 +1043,7 @@
    remember to unset, exactly as the message block's own button is. */
 .tv-strum[data-state="refused"] .tv-strum-twins,
 .tv-strum[data-state="unsupported"] .tv-strum-twins,
-.tv-strum[data-state="processed"] .tv-strum-twins,
-.tv-strum[data-state="refused"] .tv-strum-foot,
-.tv-strum[data-state="unsupported"] .tv-strum-foot,
-.tv-strum[data-state="processed"] .tv-strum-foot {
+.tv-strum[data-state="processed"] .tv-strum-twins {
   display: none;
 }
 
@@ -983,13 +1110,6 @@
   display: inline-flex;
 }
 
-.tv-strum-foot {
-  margin: 0;
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--muted);
-}
-
 /* ---------- narrow and short screens ---------- */
 
 @media (max-width: 359px) {
@@ -1019,19 +1139,15 @@
   .tv-row {
     min-height: 32px;
   }
-
-  .tv-strum-foot {
-    font-size: 10.5px;
-  }
 }
 
 /* ---------- motion preferences ---------- */
 
-/* Nothing here transitions position — every one of these is a colour or
-   opacity cross-fade of the in-tune state. style.css cuts every duration to
-   0.01ms !important under this preference, which would make the switch a hard
+/* Every rule in here is a colour or opacity cross-fade of the in-tune state,
+   and none of them moves anything. style.css cuts every duration to 0.01ms
+   !important under this preference, which would make the switch a hard
    luminance edge: the opposite of what asking for less motion should buy you.
-   Win the cascade back for the cross-fades and drop the moving halo instead. */
+   Win the cascade back for the cross-fades — and only for them. */
 @media (prefers-reduced-motion: reduce) {
   .tv-card,
   .tv-card::before,
@@ -1043,13 +1159,16 @@
   .tv-metrics,
   .tv-cents,
   .tv-hint,
-  .tv-strings-title,
-  .tv-modes .seg-item {
+  .tv-strings-title {
     transition-duration: 200ms !important;
   }
 
-  .tv-dot {
-    animation: none;
+  /* The mode switch is the one control on this list that also transitions a
+     transform — the press scale it shares with .btn. Named properties, so the
+     colours get the cross-fade back and the movement stays at the clamp. */
+  .tv-modes .seg-item {
+    transition-property: color, background-color, box-shadow, transform;
+    transition-duration: 200ms, 200ms, 200ms, 0.01ms !important;
   }
 }
 
@@ -1069,15 +1188,6 @@
 
 .tv-strum-capo {
   flex: 0 0 auto;
-}
-
-/* Debug export: quiet by design — a small ghost row under the footnote. */
-.tv-strum-save {
-  margin: 2px auto 0;
-  display: block;
-  min-height: 44px;
-  font-size: 12.5px;
-  color: var(--muted);
 }
 
 /* ==========================================================================
@@ -1188,6 +1298,58 @@
    the answer to the strum they just played. */
 .tv-board.is-stale {
   opacity: 0.45;
+}
+
+/* ==========================================================================
+   Tall phones — the Tune tab's vertical composition
+
+   On a 375x812 screen the card, the strip and the tab bar used to finish two
+   thirds of the way down and leave the last third empty, which put the one
+   control on the screen — Start listening, and now Stop listening — in the
+   middle of the glass rather than under a thumb. Height-gated at 700px so the
+   320x568 flow, which is already compact and has nothing to give, is untouched.
+   Composition only: a flex column, one grow and one ceiling — no transforms and
+   no transitions, so entering the tab still costs zero layout shift.
+   ========================================================================== */
+
+@media (min-height: 700px) {
+  .tv {
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100dvh - var(--header-h) - var(--tabbar-h) - 32px);
+  }
+
+  /* The card takes the height the screen has spare, and its own contents settle
+     against its ends: gauge and readout at the top, the CTA at the foot. Grown
+     rather than given a fixed minimum, because a minimum that is right at 812pt
+     is 65px too tall at 700 and puts the hero tab into a scroll it has never
+     needed. Growing lands on the same number where it matters — 467px, 57.5dvh,
+     at 375x812 — and simply gives back what a shorter screen does not have.
+     580px is the ceiling: past that a card is a large empty rectangle. */
+  .tv-card {
+    display: flex;
+    flex-direction: column;
+    flex: 1 0 auto;
+    max-height: 580px;
+  }
+
+  /* The strum card is deliberately NOT in any of this. Its content is a list —
+     six rows and the sentence above them — and a list given a hero's height is
+     a list with a hole under it: at the ceiling the board finished 434px down
+     and the button sat at 651, with a quarter of the card empty in between.
+     Height belongs to the gauge, which is one dial and grows into the room it
+     is given; the board hugs what it has to say, in every state it has. */
+  .tv-card .tv-cta {
+    margin-top: auto;
+  }
+
+  /* ...and the strip goes to the other end, so the string names sit where the
+     hand already is instead of floating under the card. Flex-grow is resolved
+     before auto margins, so this takes only what the card's ceiling leaves —
+     on a phone, nothing; on a tall desktop window, the difference. */
+  .tv-strings {
+    margin-top: auto;
+  }
 }
 
 /* ---------- motion preferences ---------- */
